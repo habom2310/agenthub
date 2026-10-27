@@ -1,0 +1,432 @@
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildCli, runCli } from '../src/cli.js';
+import { setCustomHome } from '../src/core/detector.js';
+import { initHub } from '../src/core/scaffold.js';
+import { ensureDir, safeWriteFile } from '../src/utils/fs.js';
+
+function stripAnsi(str: string): string {
+  return str.replace(/\u001b\[[0-9;]*m/g, '');
+}
+
+describe('CLI Integration', () => {
+  let sandbox: string;
+  let logs: string[] = [];
+  let errors: string[] = [];
+  let stdoutData = '';
+
+  beforeEach(() => {
+    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agenthub-cli-test-'));
+    logs = [];
+    errors = [];
+    stdoutData = '';
+
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    });
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      stdoutData += String(chunk);
+      return true;
+    });
+
+    process.exitCode = undefined;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    setCustomHome(null, null);
+    process.exitCode = undefined;
+    try {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup errors
+    }
+  });
+
+  it('init scaffolds hub and prints success banner', async () => {
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(['-H', sandbox, 'init'], { from: 'user' });
+
+    const hubManifest = path.join(sandbox, '.agenthub', 'agenthub.json');
+    expect(fs.existsSync(hubManifest)).toBe(true);
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('agenthub initialized successfully!');
+    expect(fullLog).toContain('Manifest:');
+  });
+
+  it('detect reports hub status and platform presence', async () => {
+    // 1. Initialize hub
+    initHub({ templateDir: undefined });
+    // In sandbox, create dummy .gemini folder to test [FOUND]
+    ensureDir(path.join(sandbox, '.gemini'));
+
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(['-H', sandbox, 'detect'], { from: 'user' });
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('agenthub status:');
+    expect(fullLog).toContain('Platforms:');
+    expect(fullLog).toContain('[FOUND] Antigravity');
+    expect(fullLog).toContain('[NOT FOUND]');
+  });
+
+  it('project generates platform rule files and subagent manifests', async () => {
+    // Scaffold hub first
+    const hubDir = path.join(sandbox, '.agenthub');
+    ensureDir(path.join(hubDir, 'rules'));
+    safeWriteFile(path.join(hubDir, 'rules', 'common.md'), '# Common Rules\nSome content');
+    safeWriteFile(path.join(hubDir, 'agenthub.json'), JSON.stringify({ version: '0.1.0' }));
+
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(['-H', sandbox, 'project'], { from: 'user' });
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Projected GEMINI.md');
+    expect(fullLog).toContain('Projected CLAUDE.md');
+    expect(fs.existsSync(path.join(sandbox, '.gemini', 'GEMINI.md'))).toBe(true);
+    expect(fs.existsSync(path.join(sandbox, '.claude', 'CLAUDE.md'))).toBe(true);
+  });
+
+  it('project respects --no-imports flag', async () => {
+    const hubDir = path.join(sandbox, '.agenthub');
+    ensureDir(path.join(hubDir, 'rules'));
+    safeWriteFile(path.join(hubDir, 'rules', 'common.md'), '# Common Rules\nDirect content here');
+
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(['-H', sandbox, 'project', '--no-imports'], { from: 'user' });
+
+    const claudeMd = fs.readFileSync(path.join(sandbox, '.claude', 'CLAUDE.md'), 'utf-8');
+    expect(claudeMd).not.toContain('@common.md');
+    expect(claudeMd).toContain('Direct content here');
+  });
+
+  it('doctor detects issues and exits with code 1 when --fix is omitted', async () => {
+    // Scaffold minimal broken environment
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(['-H', sandbox, 'doctor'], { from: 'user' });
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('[WARN]');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('doctor --fix attempts automatic repairs', async () => {
+    // Run init first so templates exist
+    const hubDir = path.join(sandbox, '.agenthub');
+    ensureDir(path.join(hubDir, 'rules'));
+    safeWriteFile(path.join(hubDir, 'rules', 'common.md'), '# Common Rules');
+    safeWriteFile(
+      path.join(hubDir, 'agenthub.json'),
+      JSON.stringify({
+        version: '0.1.0',
+        platforms: {
+          claude: { enabled: true },
+          antigravity: { enabled: true },
+          codex: { enabled: true },
+        },
+      })
+    );
+
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(['-H', sandbox, 'doctor', '--fix'], { from: 'user' });
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('[PASS]');
+    // With --fix, exitCode should not be forced to 1 by doctor
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('budget audits token overhead against boot target', async () => {
+    const hubDir = path.join(sandbox, '.agenthub');
+    ensureDir(path.join(hubDir, 'rules'));
+    safeWriteFile(path.join(hubDir, 'rules', 'common.md'), '# Rules\nShort rule text');
+
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(['-H', sandbox, 'budget'], { from: 'user' });
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Token Budget Audit:');
+    expect(fullLog).toContain('Core rules tokens:');
+    expect(fullLog).toContain('Target budget:');
+    expect(fullLog).toContain('PASS (LEAN)');
+  });
+
+  it('mcp status and mcp sync report and sync servers', async () => {
+    // Create .claude dir so platform is detected as installed
+    ensureDir(path.join(sandbox, '.claude'));
+
+    const hubDir = path.join(sandbox, '.agenthub');
+    ensureDir(path.join(hubDir, 'mcp'));
+    safeWriteFile(
+      path.join(hubDir, 'mcp', 'servers.json'),
+      JSON.stringify({
+        mcpServers: {
+          testserver: { command: 'node', args: ['server.js'] },
+        },
+      })
+    );
+
+    // MCP status
+    const cli1 = buildCli();
+    cli1.exitOverride();
+    await cli1.parseAsync(['-H', sandbox, 'mcp', 'status'], { from: 'user' });
+
+    let fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('MCP Status:');
+    expect(fullLog).toContain('Hub servers:');
+    expect(fullLog).toContain('testserver');
+
+    logs = [];
+
+    // MCP sync
+    const cli2 = buildCli();
+    cli2.exitOverride();
+    await cli2.parseAsync(['-H', sandbox, 'mcp', 'sync'], { from: 'user' });
+
+    fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('MCP Sync:');
+    expect(fullLog).toContain('Updated Claude MCP configuration in .claude.json');
+
+    // Verify Claude settings updated
+    const claudeJson = path.join(sandbox, '.claude.json');
+    expect(fs.existsSync(claudeJson)).toBe(true);
+  });
+
+  it('export chatgpt --stdout outputs rules directly to stdout', async () => {
+    const hubDir = path.join(sandbox, '.agenthub');
+    ensureDir(path.join(hubDir, 'rules', 'overrides'));
+    safeWriteFile(path.join(hubDir, 'rules', 'common.md'), '# Common Export Guidelines');
+
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(['-H', sandbox, 'export', 'chatgpt', '--stdout'], { from: 'user' });
+
+    expect(stdoutData).toContain('# Multi-Agent Guidelines & Operational Heuristics');
+    expect(stdoutData).toContain('# Common Export Guidelines');
+  });
+
+  it('export saves to file when --stdout is not passed', async () => {
+    const hubDir = path.join(sandbox, '.agenthub');
+    ensureDir(path.join(hubDir, 'rules', 'overrides'));
+    safeWriteFile(path.join(hubDir, 'rules', 'common.md'), '# Export Test Content');
+
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(['-H', sandbox, 'export', 'claude'], { from: 'user' });
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Exported claude rules to:');
+    const exportFile = path.join(hubDir, 'export', 'claude_project_instructions.md');
+    expect(fs.existsSync(exportFile)).toBe(true);
+  });
+
+  it('connect cursor links skills and projects rules', async () => {
+    const hubDir = path.join(sandbox, '.agenthub');
+    ensureDir(path.join(hubDir, 'skills'));
+    ensureDir(path.join(hubDir, 'rules'));
+    safeWriteFile(path.join(hubDir, 'agenthub.json'), JSON.stringify({ version: '0.1.0' }));
+    safeWriteFile(path.join(hubDir, 'rules', 'common.md'), '# Cursor Rules');
+
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(['-H', sandbox, 'connect', 'cursor'], { from: 'user' });
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Connected Cursor');
+    expect(fs.existsSync(path.join(sandbox, '.cursor', 'rules', 'agentrc.mdc'))).toBe(true);
+  });
+
+  it('connect rejects --target-dir for unsupported platforms', async () => {
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(
+      ['-H', sandbox, 'connect', 'claude', '--target-dir', path.join(sandbox, 'custom-claude')],
+      { from: 'user' }
+    );
+
+    const fullError = stripAnsi(errors.join('\n'));
+    expect(fullError).toContain("Custom --target-dir is not supported for 'claude'");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('git status reports uninitialized status, then reports branch after git init', async () => {
+    const hubDir = path.join(sandbox, '.agenthub');
+    ensureDir(hubDir);
+
+    // Initial git status on non-repo
+    const cli1 = buildCli();
+    cli1.exitOverride();
+    await cli1.parseAsync(['-H', sandbox, 'git', 'status'], { from: 'user' });
+
+    let fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Hub directory is not a git repository');
+
+    logs = [];
+
+    // Git init
+    const cli2 = buildCli();
+    cli2.exitOverride();
+    await cli2.parseAsync(['-H', sandbox, 'git', 'init'], { from: 'user' });
+
+    fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Initialized git repository in hub');
+
+    logs = [];
+
+    // Git status after init (contains untracked .gitignore)
+    const cli3 = buildCli();
+    cli3.exitOverride();
+    await cli3.parseAsync(['-H', sandbox, 'git', 'status'], { from: 'user' });
+
+    fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Git Status:');
+    expect(fullLog).toContain('Branch:');
+    expect(fullLog).toContain('dirty');
+    expect(fullLog).toContain('.gitignore');
+
+    logs = [];
+
+    // Git push to commit locally
+    const cli4 = buildCli();
+    cli4.exitOverride();
+    await cli4.parseAsync(['-H', sandbox, 'push', '-m', 'Initial commit'], { from: 'user' });
+
+    fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Changes committed locally');
+
+    logs = [];
+
+    // Git status after push should be clean
+    const cli5 = buildCli();
+    cli5.exitOverride();
+    await cli5.parseAsync(['-H', sandbox, 'git', 'status'], { from: 'user' });
+
+    fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('clean');
+  });
+
+  it('diff and promote detect and promote rule drift', async () => {
+    const hubDir = path.join(sandbox, '.agenthub');
+    ensureDir(path.join(hubDir, 'rules'));
+    safeWriteFile(path.join(hubDir, 'rules', 'common.md'), '# Section 1\nOriginal text\n');
+    safeWriteFile(path.join(hubDir, 'agenthub.json'), JSON.stringify({ version: '0.1.0' }));
+
+    // Project rules to gemini
+    const cliProj = buildCli();
+    cliProj.exitOverride();
+    await cliProj.parseAsync(['-H', sandbox, 'project'], { from: 'user' });
+
+    // Introduce downstream drift in GEMINI.md
+    const geminiMd = path.join(sandbox, '.gemini', 'GEMINI.md');
+    fs.appendFileSync(geminiMd, '\n## New Feature Rule\nThis is a newly discovered rule downstream.\n');
+
+    // Check diff
+    logs = [];
+    const cliDiff = buildCli();
+    cliDiff.exitOverride();
+    await cliDiff.parseAsync(['-H', sandbox, 'diff', '-p', 'gemini'], { from: 'user' });
+
+    let fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Drift detected');
+    expect(fullLog).toContain('New Feature Rule');
+
+    // Promote the drifted chunk
+    logs = [];
+    const cliPromote = buildCli();
+    cliPromote.exitOverride();
+    await cliPromote.parseAsync(
+      ['-H', sandbox, 'promote', 'common.md', '-f', 'gemini', '--header', 'New Feature Rule'],
+      { from: 'user' }
+    );
+
+    fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain("Promoted rule 'New Feature Rule' into common.md");
+
+    // Verify common.md now contains the promoted chunk
+    const updatedCommon = fs.readFileSync(path.join(hubDir, 'rules', 'common.md'), 'utf-8');
+    expect(updatedCommon).toContain('## New Feature Rule');
+  });
+
+  it('runCli helper executes commands successfully', async () => {
+    await runCli(['-H', sandbox, 'detect']);
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('agenthub status:');
+  });
+
+  it('runCli executes link command successfully', async () => {
+    const hubDir = path.join(sandbox, '.agenthub');
+    ensureDir(path.join(hubDir, 'skills', 'my-skill'));
+    safeWriteFile(
+      path.join(hubDir, 'skills', 'my-skill', 'SKILL.md'),
+      '---\nname: my-skill\ndescription: test\n---\n# My Skill'
+    );
+
+    await runCli(['-H', sandbox, 'link']);
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Linked Claude skills');
+    expect(fullLog).toContain('Linked Gemini skills');
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('link command sets process.exitCode = 1 on linking failure', async () => {
+    const linker = await import('../src/core/linker.js');
+    const spy = vi.spyOn(linker, 'linkSkillsForClaude').mockReturnValueOnce({
+      success: false,
+      message: 'Failed to create junction',
+    });
+
+    await runCli(['-H', sandbox, 'link']);
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Failed to create junction');
+    expect(process.exitCode).toBe(1);
+
+    spy.mockRestore();
+  });
+
+  it('runCli executes pull command with remote and branch', async () => {
+    const remoteDir = path.join(sandbox, 'remote.git');
+    ensureDir(remoteDir);
+    spawnSync('git', ['init', '--bare', '-b', 'main'], { cwd: remoteDir });
+
+    const feederDir = path.join(sandbox, 'feeder');
+    ensureDir(feederDir);
+    spawnSync('git', ['init', '-b', 'main'], { cwd: feederDir });
+    spawnSync('git', ['remote', 'add', 'origin', remoteDir], { cwd: feederDir });
+
+    safeWriteFile(path.join(feederDir, 'rules', 'common.md'), '# Feeder Rules');
+    spawnSync('git', ['add', '-A'], { cwd: feederDir });
+    spawnSync(
+      'git',
+      ['-c', 'user.name=feeder', '-c', 'user.email=feeder@test', 'commit', '-m', 'Initial pull test'],
+      { cwd: feederDir }
+    );
+    spawnSync('git', ['push', '-u', 'origin', 'main'], { cwd: feederDir });
+
+    // Initialize sandbox hub with the remote
+    const hubDir = path.join(sandbox, '.agenthub');
+    ensureDir(hubDir);
+    spawnSync('git', ['init', '-b', 'main'], { cwd: hubDir });
+    spawnSync('git', ['remote', 'add', 'origin', remoteDir], { cwd: hubDir });
+
+    logs = [];
+    await runCli(['-H', sandbox, 'pull', '-r', 'origin', '-b', 'main']);
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Successfully pulled from origin/main');
+    expect(fs.existsSync(path.join(hubDir, 'rules', 'common.md'))).toBe(true);
+  });
+});

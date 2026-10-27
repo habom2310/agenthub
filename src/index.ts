@@ -116,4 +116,36 @@ export {
   type DoctorResult,
 } from './core/doctor.js';
 
+// Core Git Sync
+export {
+  STANDARD_IGNORE_ENTRIES,
+  isGitInstalled,
+  isGitRepo,
+  ensureGitignore,
+  gitStatus,
+  gitInitHub,
+  gitPush,
+  gitPull,
+  redactGitSecrets,
+  type GitStatusResult,
+  type GitOperationResult,
+} from './core/git-sync.js';
+
+// Core Exporter
+export {
+  EXPORT_TARGETS,
+  exportRules,
+  type ExportTargetConfig,
+  type ExportResult,
+} from './core/exporter.js';
+
+// Core Token Budget
+export {
+  ESTIMATED_CHARS_PER_TOKEN,
+  TARGET_BUDGET,
+  estimateTokens,
+  auditTokenBudget,
+  type BudgetAuditResult,
+} from './core/token-budget.js';
+
 
