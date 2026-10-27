@@ -10,14 +10,41 @@
   },
   "files": [
     "dist",
-    "templates"
+    "templates",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": "habom2310",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/habom2310/agenthub.git"
+  },
+  "homepage": "https://github.com/habom2310/agenthub#readme",
+  "bugs": {
+    "url": "https://github.com/habom2310/agenthub/issues"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "rules",
+    "skills",
+    "mcp",
+    "antigravity",
+    "claude-code",
+    "codex",
+    "cursor",
+    "windsurf"
   ],
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run typecheck && npm run build && npm test"
   },
   "dependencies": {
     "commander": "^13.1.0",
