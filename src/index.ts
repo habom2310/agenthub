@@ -33,3 +33,47 @@ export {
   type ScaffoldOptions,
   type ScaffoldResult,
 } from './core/scaffold.js';
+
+// Core Chunker
+export {
+  normalizeContent,
+  computeNormalizedHash,
+  parseMarkdownChunks,
+  diffChunks,
+  type MarkdownChunk,
+  type ChunkDiff,
+} from './core/chunker.js';
+
+// Core Projector
+export {
+  HEADER_GUARD,
+  PLATFORM_RULE_FILES,
+  parseFrontmatter,
+  projectGeminiRules,
+  projectClaudeRules,
+  projectCodexRules,
+  projectCursorRules,
+  projectWindsurfRules,
+  projectSubagents,
+  projectRules,
+  projectAll,
+  type AgentFrontmatter,
+  type ParsedAgentTemplate,
+  type ProjectResult,
+  type ProjectSubagentsResult,
+  type ProjectRulesResult,
+  type ProjectOptions,
+} from './core/projector.js';
+
+// Core Promoter
+export {
+  getExpectedRulesText,
+  detectRuleDrift,
+  promoteChunk,
+  type PlatformDriftReport,
+  type PlatformDriftTarget,
+  type RuleDriftAudit,
+  type PromoteOptions,
+  type PromoteResult,
+} from './core/promoter.js';
+
