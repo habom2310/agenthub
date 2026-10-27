@@ -29,6 +29,8 @@ export const STANDARD_IGNORE_ENTRIES = [
   '*.pyc',
   '.DS_Store',
   'Thumbs.db',
+  '.env',
+  '*.env',
 ];
 
 interface GitExecResult {
@@ -41,7 +43,9 @@ interface GitExecResult {
  * Redacts credentials and auth tokens from git remote URLs and command outputs.
  */
 export function redactGitSecrets(text: string): string {
-  return text.replace(/(https?:\/\/)([^:@\s]+):([^@\s]+)@/g, '$1$2:***@');
+  return text.replace(/(https?:\/\/)([^:@\s]+)(?::([^@\s]+))?@/g, (_m, proto, user, pass) => {
+    return pass !== undefined ? `${proto}${user}:***@` : `${proto}***@`;
+  });
 }
 
 function runGit(args: string[], cwd?: string): GitExecResult {

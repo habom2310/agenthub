@@ -171,6 +171,10 @@ describe('promoter', () => {
     });
 
     it('detects drift when expected @import rules are missing in Claude manifest', () => {
+      safeWriteFile(path.join(rulesDir, 'common.md'), '# Common');
+      safeWriteFile(path.join(rulesDir, 'code-tools.md'), '# Tools');
+      safeWriteFile(path.join(rulesDir, 'handoffs.md'), '# Handoffs');
+      safeWriteFile(path.join(rulesDir, 'overrides', 'claude.md'), '# Overrides');
       const claudeFile = path.join(homeDir, '.claude', 'CLAUDE.md');
       // Manifest missing overrides/claude.md
       const partialManifest = [
@@ -188,6 +192,10 @@ describe('promoter', () => {
     });
 
     it('normalizes backslashes when checking Claude @import manifest', () => {
+      safeWriteFile(path.join(rulesDir, 'common.md'), '# Common');
+      safeWriteFile(path.join(rulesDir, 'code-tools.md'), '# Tools');
+      safeWriteFile(path.join(rulesDir, 'handoffs.md'), '# Handoffs');
+      safeWriteFile(path.join(rulesDir, 'overrides', 'claude.md'), '# Overrides');
       const claudeFile = path.join(homeDir, '.claude', 'CLAUDE.md');
       const windowsManifest = [
         HEADER_GUARD,
@@ -197,6 +205,20 @@ describe('promoter', () => {
         `@C:\\users\\test\\.agentrc\\rules\\overrides\\claude.md`,
       ].join('\n\n') + '\n';
       safeWriteFile(claudeFile, windowsManifest);
+
+      const audit = detectRuleDrift(homeDir, hubDir);
+      expect(audit.claude.hasDrift).toBe(false);
+      expect(audit.claude.removed).toHaveLength(0);
+    });
+
+    it('does not report drift when non-existent platform override files are absent from Claude manifest', () => {
+      safeWriteFile(path.join(rulesDir, 'common.md'), '# Common');
+      const claudeFile = path.join(homeDir, '.claude', 'CLAUDE.md');
+      const manifest = [
+        HEADER_GUARD,
+        '@' + path.join(rulesDir, 'common.md').replace(/\\/g, '/'),
+      ].join('\n\n') + '\n';
+      safeWriteFile(claudeFile, manifest);
 
       const audit = detectRuleDrift(homeDir, hubDir);
       expect(audit.claude.hasDrift).toBe(false);

@@ -294,13 +294,13 @@ export function projectCodexSkillManifests(
     const displayName = toTitleCase(name);
     const shortDesc = getFirstSentence(description);
 
-    const yamlContent = [
-      'interface:',
-      `  display_name: "${displayName.replace(/"/g, '\\"')}"`,
-      `  short_description: "${shortDesc.replace(/"/g, '\\"')}"`,
-      `  default_prompt: "Use ${name.replace(/"/g, '\\"')} skill for this task."`,
-      '',
-    ].join('\n');
+    const yamlContent = yaml.stringify({
+      interface: {
+        display_name: displayName,
+        short_description: shortDesc,
+        default_prompt: `Use ${name} skill for this task.`,
+      },
+    });
 
     safeWriteFile(manifestPath, yamlContent);
     generated.push(name);

@@ -61,6 +61,9 @@ describe('git-sync', () => {
       const url = 'https://username:secret_token_12345@github.com/org/repo.git';
       expect(redactGitSecrets(url)).toBe('https://username:***@github.com/org/repo.git');
 
+      const tokenUrl = 'https://token@github.com/org/repo.git';
+      expect(redactGitSecrets(tokenUrl)).toBe('https://***@github.com/org/repo.git');
+
       const httpUrl = 'http://user:pass123@gitlab.example.com/project.git';
       expect(redactGitSecrets(httpUrl)).toBe('http://user:***@gitlab.example.com/project.git');
     });
