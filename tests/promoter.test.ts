@@ -131,6 +131,9 @@ describe('promoter', () => {
 
     it('handles Claude @import manifest detection vs non-manifest full diff', () => {
       safeWriteFile(path.join(rulesDir, 'common.md'), '# Rules\nSome content.');
+      safeWriteFile(path.join(rulesDir, 'code-tools.md'), '# Tools\nSome content.');
+      safeWriteFile(path.join(rulesDir, 'handoffs.md'), '# Handoffs\nSome content.');
+      safeWriteFile(path.join(rulesDir, 'overrides', 'claude.md'), '# Claude\nSome content.');
 
       // 1. Claude as @import manifest without extra text -> no drift
       const claudeFile = path.join(homeDir, '.claude', 'CLAUDE.md');
