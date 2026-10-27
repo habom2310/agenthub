@@ -1,0 +1,194 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  createJunction,
+  ensureDir,
+  findExecutable,
+  isJunctionOrSymlink,
+  safeWriteFile,
+} from '../src/utils/fs.js';
+
+describe('fs utils', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenthub-fs-test-'));
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup errors
+    }
+  });
+
+  describe('ensureDir & safeWriteFile', () => {
+    it('creates nested directories recursively', () => {
+      const nested = path.join(tmpDir, 'a', 'b', 'c');
+      ensureDir(nested);
+      expect(fs.existsSync(nested)).toBe(true);
+      expect(fs.statSync(nested).isDirectory()).toBe(true);
+    });
+
+    it('writes file and creates parent directories if missing', () => {
+      const target = path.join(tmpDir, 'deep', 'folder', 'test.txt');
+      safeWriteFile(target, 'hello agenthub');
+      expect(fs.existsSync(target)).toBe(true);
+      expect(fs.readFileSync(target, 'utf-8')).toBe('hello agenthub');
+    });
+
+    it('atomically overwrites existing file without leaving temporary sibling files', () => {
+      const target = path.join(tmpDir, 'atomic', 'data.txt');
+      safeWriteFile(target, 'version 1');
+      expect(fs.readFileSync(target, 'utf-8')).toBe('version 1');
+
+      safeWriteFile(target, 'version 2');
+      expect(fs.readFileSync(target, 'utf-8')).toBe('version 2');
+
+      const files = fs.readdirSync(path.join(tmpDir, 'atomic'));
+      expect(files).toEqual(['data.txt']);
+    });
+  });
+
+  describe('createJunction & isJunctionOrSymlink', () => {
+    it('creates junction/symlink to target directory', () => {
+      const targetDir = path.join(tmpDir, 'target');
+      const linkPath = path.join(tmpDir, 'link');
+      ensureDir(targetDir);
+
+      const created = createJunction(targetDir, linkPath);
+      expect(created).toBe(true);
+      expect(isJunctionOrSymlink(linkPath)).toBe(true);
+      expect(isJunctionOrSymlink(targetDir)).toBe(false);
+    });
+
+    it('returns true if link already points to target directory', () => {
+      const targetDir = path.join(tmpDir, 'target');
+      const linkPath = path.join(tmpDir, 'link');
+      ensureDir(targetDir);
+
+      expect(createJunction(targetDir, linkPath)).toBe(true);
+      // Calling again should return true without failure
+      expect(createJunction(targetDir, linkPath)).toBe(true);
+    });
+
+    it('replaces existing junction if target changes', () => {
+      const targetA = path.join(tmpDir, 'targetA');
+      const targetB = path.join(tmpDir, 'targetB');
+      const linkPath = path.join(tmpDir, 'link');
+      ensureDir(targetA);
+      ensureDir(targetB);
+      safeWriteFile(path.join(targetA, 'a.txt'), 'file a');
+      safeWriteFile(path.join(targetB, 'b.txt'), 'file b');
+
+      expect(createJunction(targetA, linkPath)).toBe(true);
+      expect(fs.existsSync(path.join(linkPath, 'a.txt'))).toBe(true);
+
+      // Point to targetB
+      expect(createJunction(targetB, linkPath)).toBe(true);
+      expect(fs.existsSync(path.join(linkPath, 'b.txt'))).toBe(true);
+      expect(fs.existsSync(path.join(linkPath, 'a.txt'))).toBe(false);
+    });
+
+    it('fails safely if target does not exist', () => {
+      const nonexistent = path.join(tmpDir, 'does-not-exist');
+      const linkPath = path.join(tmpDir, 'link');
+      const result = createJunction(nonexistent, linkPath);
+      expect(result).toBe(false);
+      expect(fs.existsSync(linkPath)).toBe(false);
+    });
+
+    it('refuses to replace normal directory without force, replaces with force', () => {
+      const targetDir = path.join(tmpDir, 'target');
+      const existingDir = path.join(tmpDir, 'existing');
+      ensureDir(targetDir);
+      ensureDir(existingDir);
+
+      // Without force, should return false and not delete existing directory
+      const resWithoutForce = createJunction(targetDir, existingDir, { force: false });
+      expect(resWithoutForce).toBe(false);
+      expect(isJunctionOrSymlink(existingDir)).toBe(false);
+
+      // With force, should replace directory with junction
+      const resWithForce = createJunction(targetDir, existingDir, { force: true });
+      expect(resWithForce).toBe(true);
+      expect(isJunctionOrSymlink(existingDir)).toBe(true);
+    });
+
+    it('returns false for nonexistent paths in isJunctionOrSymlink', () => {
+      expect(isJunctionOrSymlink(path.join(tmpDir, 'phantom'))).toBe(false);
+    });
+
+    it('returns false for normal files nested inside a symlinked directory', () => {
+      const realDir = path.join(tmpDir, 'real-folder');
+      const nestedFile = path.join(realDir, 'nested.txt');
+      safeWriteFile(nestedFile, 'content');
+
+      const linkDir = path.join(tmpDir, 'link-folder');
+      createJunction(realDir, linkDir);
+
+      expect(isJunctionOrSymlink(linkDir)).toBe(true);
+      // The nested file inside linkDir is a normal file, not a symlink itself
+      expect(isJunctionOrSymlink(path.join(linkDir, 'nested.txt'))).toBe(false);
+    });
+  });
+
+  describe('findExecutable', () => {
+    it('finds node executable on PATH', () => {
+      const nodeExe = findExecutable('node');
+      expect(nodeExe).not.toBeNull();
+      expect(typeof nodeExe).toBe('string');
+      expect(fs.existsSync(nodeExe!)).toBe(true);
+    });
+
+    it('returns null for non-existent executable', () => {
+      const phantom = findExecutable('phantom_binary_that_does_not_exist_xyz123');
+      expect(phantom).toBeNull();
+    });
+
+    it('returns null for empty name', () => {
+      expect(findExecutable('')).toBeNull();
+    });
+
+    it('locates executable with direct path', () => {
+      const binDir = path.join(tmpDir, 'bin');
+      ensureDir(binDir);
+      const isWin = process.platform === 'win32';
+      const scriptName = isWin ? 'testcmd.bat' : 'testcmd.sh';
+      const scriptPath = path.join(binDir, scriptName);
+      safeWriteFile(scriptPath, isWin ? '@echo test' : '#!/bin/sh\necho test');
+
+      if (!isWin) {
+        fs.chmodSync(scriptPath, 0o755);
+      }
+
+      const found = findExecutable(scriptPath);
+      expect(found).not.toBeNull();
+    });
+
+    it('handles quoted entries in PATH environment variable', () => {
+      const originalPath = process.env.PATH;
+      try {
+        const binDir = path.join(tmpDir, 'quoted bin');
+        ensureDir(binDir);
+        const isWin = process.platform === 'win32';
+        const scriptName = isWin ? 'quotedcmd.bat' : 'quotedcmd.sh';
+        const scriptPath = path.join(binDir, scriptName);
+        safeWriteFile(scriptPath, isWin ? '@echo test' : '#!/bin/sh\necho test');
+
+        if (!isWin) {
+          fs.chmodSync(scriptPath, 0o755);
+        }
+
+        process.env.PATH = `"${binDir}"${path.delimiter}${originalPath || ''}`;
+        const found = findExecutable(isWin ? 'quotedcmd' : 'quotedcmd.sh');
+        expect(found).not.toBeNull();
+      } finally {
+        process.env.PATH = originalPath;
+      }
+    });
+  });
+});
