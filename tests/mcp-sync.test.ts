@@ -1,0 +1,446 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { setCustomHome } from '../src/core/detector.js';
+import {
+  adaptServerForClaude,
+  adaptServerForGemini,
+  getMcpStatus,
+  normalizeServerForHub,
+  readJsonSafely,
+  syncMcpServers,
+} from '../src/core/mcp-sync.js';
+import { ensureDir, safeWriteFile } from '../src/utils/fs.js';
+
+describe('mcp-sync', () => {
+  let tmpDir: string;
+  let homeDir: string;
+  let hubDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenthub-mcp-test-'));
+    homeDir = path.join(tmpDir, 'home');
+    hubDir = path.join(tmpDir, 'hub');
+    ensureDir(homeDir);
+    ensureDir(hubDir);
+    setCustomHome(homeDir, hubDir);
+  });
+
+  afterEach(() => {
+    setCustomHome(null, null);
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup errors
+    }
+  });
+
+  describe('readJsonSafely', () => {
+    it('returns empty object and success=true for nonexistent file', () => {
+      const nonExistent = path.join(tmpDir, 'does-not-exist.json');
+      const res = readJsonSafely(nonExistent);
+      expect(res.success).toBe(true);
+      expect(res.data).toEqual({});
+    });
+
+    it('returns parsed data and success=true for valid JSON object', () => {
+      const file = path.join(tmpDir, 'valid.json');
+      safeWriteFile(file, JSON.stringify({ a: 1, b: 'two' }));
+      const res = readJsonSafely(file);
+      expect(res.success).toBe(true);
+      expect(res.data).toEqual({ a: 1, b: 'two' });
+    });
+
+    it('returns empty object and success=false for malformed JSON', () => {
+      const file = path.join(tmpDir, 'malformed.json');
+      safeWriteFile(file, '{ not valid json');
+      const res = readJsonSafely(file);
+      expect(res.success).toBe(false);
+      expect(res.data).toEqual({});
+    });
+
+    it('returns empty object and success=false for JSON array or primitive', () => {
+      const arrFile = path.join(tmpDir, 'array.json');
+      safeWriteFile(arrFile, '[1, 2, 3]');
+      expect(readJsonSafely(arrFile).success).toBe(false);
+
+      const primFile = path.join(tmpDir, 'prim.json');
+      safeWriteFile(primFile, '"just a string"');
+      expect(readJsonSafely(primFile).success).toBe(false);
+
+      const nullFile = path.join(tmpDir, 'null.json');
+      safeWriteFile(nullFile, 'null');
+      expect(readJsonSafely(nullFile).success).toBe(false);
+    });
+
+    it('supports custom generic type parameter', () => {
+      interface CustomConfig {
+        host: string;
+        port: number;
+      }
+      const file = path.join(tmpDir, 'custom.json');
+      safeWriteFile(file, JSON.stringify({ host: 'localhost', port: 8080 }));
+      const res = readJsonSafely<CustomConfig>(file);
+      expect(res.success).toBe(true);
+      expect(res.data.host).toBe('localhost');
+      expect(res.data.port).toBe(8080);
+    });
+  });
+
+  describe('normalizeServerForHub', () => {
+    it('removes ephemeral/client keys like alwaysLoad', () => {
+      const raw = {
+        command: 'node',
+        args: ['server.js'],
+        alwaysLoad: true,
+        env: { PORT: '3000' },
+      };
+      const normalized = normalizeServerForHub('test', raw);
+      expect(normalized.alwaysLoad).toBeUndefined();
+      expect(normalized.command).toBe('node');
+      expect(normalized.args).toEqual(['server.js']);
+      expect(normalized.env).toEqual({ PORT: '3000' });
+    });
+  });
+
+  describe('adaptServerForClaude & adaptServerForGemini', () => {
+    it('infers type=stdio when command is present and type is absent', () => {
+      const cfg = { command: 'codegraph', args: ['serve'] };
+      const adaptedClaude = adaptServerForClaude('codegraph', cfg);
+      expect(adaptedClaude.type).toBe('stdio');
+
+      const adaptedGemini = adaptServerForGemini('codegraph', cfg);
+      expect(adaptedGemini.type).toBe('stdio');
+    });
+
+    it('infers type=http when url is present and type is absent', () => {
+      const cfg = { url: 'http://localhost:8080/mcp' };
+      const adaptedClaude = adaptServerForClaude('remote', cfg);
+      expect(adaptedClaude.type).toBe('http');
+
+      const adaptedGemini = adaptServerForGemini('remote', cfg);
+      expect(adaptedGemini.type).toBe('http');
+    });
+
+    it('preserves existing type if already defined', () => {
+      const cfg = { command: 'node', type: 'stdio' as const };
+      const adapted = adaptServerForClaude('existing', cfg);
+      expect(adapted.type).toBe('stdio');
+    });
+  });
+
+  describe('syncMcpServers bidirectional ingestion', () => {
+    it('creates servers.json in hub when hub mcp/servers.json does not exist', () => {
+      const hubServersFile = path.join(hubDir, 'mcp', 'servers.json');
+      expect(fs.existsSync(hubServersFile)).toBe(false);
+
+      const syncResult = syncMcpServers(homeDir, hubDir);
+      expect(syncResult.success).toBe(true);
+      expect(fs.existsSync(hubServersFile)).toBe(true);
+      const data = JSON.parse(fs.readFileSync(hubServersFile, 'utf-8'));
+      expect(data.mcpServers).toEqual({});
+    });
+
+    it('ingests untracked servers from Claude and Gemini into hub and updates all platforms', () => {
+      // Hub has serverHub
+      safeWriteFile(
+        path.join(hubDir, 'mcp', 'servers.json'),
+        JSON.stringify({
+          mcpServers: {
+            serverHub: { command: 'node', args: ['hub.js'] },
+          },
+        })
+      );
+
+      // Claude has serverClaude with alwaysLoad
+      safeWriteFile(
+        path.join(homeDir, '.claude.json'),
+        JSON.stringify({
+          mcpServers: {
+            serverClaude: {
+              command: 'claude-srv',
+              args: ['run'],
+              alwaysLoad: true,
+            },
+          },
+        })
+      );
+
+      // Gemini has serverGemini
+      safeWriteFile(
+        path.join(homeDir, '.gemini', 'config', 'mcp_config.json'),
+        JSON.stringify({
+          mcpServers: {
+            serverGemini: { url: 'http://localhost:8000/sse' },
+          },
+        })
+      );
+
+      const syncResult = syncMcpServers(homeDir, hubDir);
+      expect(syncResult.success).toBe(true);
+
+      // Verify hub servers.json has all 3 servers and alwaysLoad stripped
+      const hubData = JSON.parse(
+        fs.readFileSync(path.join(hubDir, 'mcp', 'servers.json'), 'utf-8')
+      );
+      expect(Object.keys(hubData.mcpServers).sort()).toEqual([
+        'serverClaude',
+        'serverGemini',
+        'serverHub',
+      ]);
+      expect(hubData.mcpServers.serverClaude.alwaysLoad).toBeUndefined();
+
+      // Verify Claude has all 3 servers with adapted types
+      const claudeData = JSON.parse(
+        fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf-8')
+      );
+      expect(Object.keys(claudeData.mcpServers).sort()).toEqual([
+        'serverClaude',
+        'serverGemini',
+        'serverHub',
+      ]);
+      expect(claudeData.mcpServers.serverHub.type).toBe('stdio');
+      expect(claudeData.mcpServers.serverGemini.type).toBe('http');
+
+      // Verify Gemini has all 3 servers with adapted types
+      const geminiData = JSON.parse(
+        fs.readFileSync(
+          path.join(homeDir, '.gemini', 'config', 'mcp_config.json'),
+          'utf-8'
+        )
+      );
+      expect(Object.keys(geminiData.mcpServers).sort()).toEqual([
+        'serverClaude',
+        'serverGemini',
+        'serverHub',
+      ]);
+      expect(geminiData.mcpServers.serverHub.type).toBe('stdio');
+      expect(geminiData.mcpServers.serverGemini.type).toBe('http');
+    });
+  });
+
+  describe('downstream projection preserving non-MCP keys', () => {
+    it('preserves oauthAccount, machineID in Claude and customGeminiKey in Gemini', () => {
+      safeWriteFile(
+        path.join(hubDir, 'mcp', 'servers.json'),
+        JSON.stringify({
+          mcpServers: {
+            codegraph: { command: 'codegraph', args: ['serve'] },
+          },
+        })
+      );
+
+      safeWriteFile(
+        path.join(homeDir, '.claude.json'),
+        JSON.stringify({
+          oauthAccount: { email: 'user@example.com', id: '12345' },
+          machineID: 'mid-abcdef-9876',
+          theme: 'dark',
+        })
+      );
+
+      safeWriteFile(
+        path.join(homeDir, '.gemini', 'settings.json'),
+        JSON.stringify({
+          customGeminiKey: 'gemini-key-xyz-789',
+          ide: { autoSave: true },
+        })
+      );
+
+      const syncResult = syncMcpServers(homeDir, hubDir);
+      expect(syncResult.success).toBe(true);
+
+      const claudeData = JSON.parse(
+        fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf-8')
+      );
+      expect(claudeData.oauthAccount).toEqual({
+        email: 'user@example.com',
+        id: '12345',
+      });
+      expect(claudeData.machineID).toBe('mid-abcdef-9876');
+      expect(claudeData.theme).toBe('dark');
+      expect(claudeData.mcpServers.codegraph).toBeDefined();
+
+      const geminiData = JSON.parse(
+        fs.readFileSync(path.join(homeDir, '.gemini', 'settings.json'), 'utf-8')
+      );
+      expect(geminiData.customGeminiKey).toBe('gemini-key-xyz-789');
+      expect(geminiData.ide).toEqual({ autoSave: true });
+      expect(geminiData.mcpServers.codegraph).toBeDefined();
+    });
+  });
+
+  describe('idempotence on repeated sync', () => {
+    it('reports all configurations already synchronized on second run', () => {
+      safeWriteFile(
+        path.join(hubDir, 'mcp', 'servers.json'),
+        JSON.stringify({
+          mcpServers: {
+            shared: { command: 'shared-srv' },
+          },
+        })
+      );
+
+      safeWriteFile(
+        path.join(homeDir, '.claude.json'),
+        JSON.stringify({ mcpServers: {} })
+      );
+
+      const run1 = syncMcpServers(homeDir, hubDir);
+      expect(run1.success).toBe(true);
+      expect(run1.actions).not.toContain(
+        'All MCP configurations are already synchronized.'
+      );
+
+      const run2 = syncMcpServers(homeDir, hubDir);
+      expect(run2.success).toBe(true);
+      expect(run2.actions).toEqual([
+        'All MCP configurations are already synchronized.',
+      ]);
+    });
+  });
+
+  describe('corrupt JSON protection', () => {
+    it('aborts when hub servers.json is corrupt', () => {
+      safeWriteFile(
+        path.join(hubDir, 'mcp', 'servers.json'),
+        '{ corrupted json'
+      );
+      safeWriteFile(
+        path.join(homeDir, '.claude.json'),
+        JSON.stringify({ mcpServers: {} })
+      );
+
+      const res = syncMcpServers(homeDir, hubDir);
+      expect(res.success).toBe(false);
+      expect(res.actions).toContain(
+        'Aborting MCP sync: servers.json is corrupt or unparseable'
+      );
+    });
+
+    it('skips corrupt .claude.json without overwriting it', () => {
+      safeWriteFile(
+        path.join(hubDir, 'mcp', 'servers.json'),
+        JSON.stringify({
+          mcpServers: { myServer: { command: 'node' } },
+        })
+      );
+      const corruptClaudeContent = '{ broken claude json';
+      safeWriteFile(path.join(homeDir, '.claude.json'), corruptClaudeContent);
+
+      const res = syncMcpServers(homeDir, hubDir);
+      expect(res.success).toBe(true);
+      expect(res.actions).toContain(
+        '[SKIP] Refusing to overwrite .claude.json: file is corrupt or unparseable'
+      );
+
+      // Verify file wasn't altered
+      expect(
+        fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf-8')
+      ).toBe(corruptClaudeContent);
+    });
+
+    it('skips corrupt gemini config without overwriting it', () => {
+      safeWriteFile(
+        path.join(hubDir, 'mcp', 'servers.json'),
+        JSON.stringify({
+          mcpServers: { myServer: { command: 'node' } },
+        })
+      );
+      const corruptMcp = '{ broken gemini mcp';
+      safeWriteFile(
+        path.join(homeDir, '.gemini', 'config', 'mcp_config.json'),
+        corruptMcp
+      );
+
+      const res = syncMcpServers(homeDir, hubDir);
+      expect(res.success).toBe(true);
+      expect(res.actions).toContain(
+        '[SKIP] Refusing to overwrite mcp_config.json: file is corrupt or unparseable'
+      );
+
+      expect(
+        fs.readFileSync(
+          path.join(homeDir, '.gemini', 'config', 'mcp_config.json'),
+          'utf-8'
+        )
+      ).toBe(corruptMcp);
+    });
+  });
+
+  describe('drift detection', () => {
+    it('detects drift when server arguments or command change, and fixes on sync', () => {
+      safeWriteFile(
+        path.join(hubDir, 'mcp', 'servers.json'),
+        JSON.stringify({
+          mcpServers: {
+            app: { command: 'node', args: ['server.js', '--port', '3000'] },
+          },
+        })
+      );
+
+      safeWriteFile(
+        path.join(homeDir, '.claude.json'),
+        JSON.stringify({
+          mcpServers: {
+            app: {
+              command: 'node',
+              args: ['server.js', '--port', '5000'],
+              type: 'stdio',
+            },
+          },
+        })
+      );
+
+      const statusBefore = getMcpStatus(homeDir, hubDir);
+      expect(statusBefore.in_sync).toBe(false);
+      expect(statusBefore.drifted_in_claude).toEqual(['app']);
+      expect(statusBefore.missing_in_claude).toEqual([]);
+
+      const syncRes = syncMcpServers(homeDir, hubDir);
+      expect(syncRes.success).toBe(true);
+
+      const statusAfter = getMcpStatus(homeDir, hubDir);
+      expect(statusAfter.in_sync).toBe(true);
+      expect(statusAfter.drifted_in_claude).toEqual([]);
+
+      const claudeData = JSON.parse(
+        fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf-8')
+      );
+      expect(claudeData.mcpServers.app.args).toEqual([
+        'server.js',
+        '--port',
+        '3000',
+      ]);
+    });
+  });
+
+  describe('uninstalled platform handling', () => {
+    it('skips uninstalled platforms and avoids creating ghost files/dirs', () => {
+      // Hub has servers
+      safeWriteFile(
+        path.join(hubDir, 'mcp', 'servers.json'),
+        JSON.stringify({
+          mcpServers: {
+            standalone: { command: 'standalone' },
+          },
+        })
+      );
+
+      // Home has neither .claude nor .gemini
+      const status = getMcpStatus(homeDir, hubDir);
+      expect(status.missing_in_claude).toEqual([]);
+      expect(status.missing_in_gemini).toEqual([]);
+      expect(status.in_sync).toBe(true);
+
+      const syncRes = syncMcpServers(homeDir, hubDir);
+      expect(syncRes.success).toBe(true);
+
+      // Verify no ghost files or directories created
+      expect(fs.existsSync(path.join(homeDir, '.claude.json'))).toBe(false);
+      expect(fs.existsSync(path.join(homeDir, '.claude'))).toBe(false);
+      expect(fs.existsSync(path.join(homeDir, '.gemini'))).toBe(false);
+    });
+  });
+});
