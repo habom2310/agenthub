@@ -91,6 +91,25 @@ export function parseFrontmatter(content: string): ParsedAgentTemplate {
   return { meta, body };
 }
 
+/**
+ * Scans hubDir/rules/addons/ for markdown rule files and returns relative paths (e.g. 'addons/xxx.md').
+ */
+export function getAddonRuleFiles(hubDir: string): string[] {
+  const addonsDir = path.join(hubDir, 'rules', 'addons');
+  try {
+    if (!fs.existsSync(addonsDir) || !fs.statSync(addonsDir).isDirectory()) {
+      return [];
+    }
+    return fs
+      .readdirSync(addonsDir)
+      .filter((f) => f.endsWith('.md') && !f.startsWith('.'))
+      .sort()
+      .map((f) => path.posix.join('addons', f));
+  } catch {
+    return [];
+  }
+}
+
 function readPlatformRules(hubDir: string, fileList: string[]): string | null {
   const rulesDir = path.join(hubDir, 'rules');
   if (!fs.existsSync(rulesDir) || !fs.statSync(rulesDir).isDirectory()) {
@@ -99,6 +118,13 @@ function readPlatformRules(hubDir: string, fileList: string[]): string | null {
   const parts: string[] = [HEADER_GUARD];
   for (const fileName of fileList) {
     const filePath = path.join(rulesDir, fileName);
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      parts.push(fs.readFileSync(filePath, 'utf-8').trim());
+    }
+  }
+  const addonFiles = getAddonRuleFiles(hubDir);
+  for (const addonFile of addonFiles) {
+    const filePath = path.join(rulesDir, addonFile);
     if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
       parts.push(fs.readFileSync(filePath, 'utf-8').trim());
     }
@@ -198,10 +224,14 @@ export function projectClaudeRules(options?: {
     const existingFiles = PLATFORM_RULE_FILES.claude.filter((f) =>
       fs.existsSync(path.join(rulesDir, f))
     );
-    if (existingFiles.length === 0) {
+    const addonFiles = getAddonRuleFiles(hub).filter((f) =>
+      fs.existsSync(path.join(rulesDir, f))
+    );
+    if (existingFiles.length === 0 && addonFiles.length === 0) {
       return { success: false, message: `No rule files found to project in: ${rulesDir}` };
     }
-    const importLines = existingFiles.map((f) => {
+    const allFiles = [...existingFiles, ...addonFiles];
+    const importLines = allFiles.map((f) => {
       const p = path.join(rulesDir, f).replace(/\\/g, '/');
       return `@${p}`;
     });

@@ -5,6 +5,7 @@ import { parseFrontmatter } from './projector.js';
 
 export interface BudgetAuditResult {
   core_rules_tokens: number;
+  addons_rules_tokens?: number;
   skills_count: number;
   skills_registry_tokens: number;
   total_boot_tokens: number;
@@ -43,6 +44,24 @@ export function auditTokenBudget(hubDir?: string): BudgetAuditResult {
   }
   const core_rules_tokens = estimateTokens(coreChars);
 
+  // Addon rules tokens
+  let addons_rules_tokens = 0;
+  const addonsDir = path.join(hub, 'rules', 'addons');
+  if (fs.existsSync(addonsDir) && fs.statSync(addonsDir).isDirectory()) {
+    let addonsChars = 0;
+    const addonFiles = fs
+      .readdirSync(addonsDir)
+      .filter((f) => f.endsWith('.md') && !f.startsWith('.'));
+    for (const f of addonFiles) {
+      const fullPath = path.join(addonsDir, f);
+      if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+        const text = fs.readFileSync(fullPath, 'utf-8');
+        addonsChars += text.trim().length;
+      }
+    }
+    addons_rules_tokens = estimateTokens(addonsChars);
+  }
+
   // Skills registry tokens
   const skillsDir = path.join(hub, 'skills');
   let skillsCount = 0;
@@ -71,12 +90,13 @@ export function auditTokenBudget(hubDir?: string): BudgetAuditResult {
   }
 
   const skills_registry_tokens = estimateTokens(skillsChars);
-  const total_boot_tokens = core_rules_tokens + skills_registry_tokens;
+  const total_boot_tokens = core_rules_tokens + addons_rules_tokens + skills_registry_tokens;
   const status: 'PASS (LEAN)' | 'EXCEEDED' =
     total_boot_tokens <= TARGET_BUDGET ? 'PASS (LEAN)' : 'EXCEEDED';
 
   return {
     core_rules_tokens,
+    addons_rules_tokens,
     skills_count: skillsCount,
     skills_registry_tokens,
     total_boot_tokens,

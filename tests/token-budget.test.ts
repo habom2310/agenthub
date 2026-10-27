@@ -136,4 +136,46 @@ describe('token-budget', () => {
       expect(report.status).toBe('EXCEEDED');
     });
   });
+
+  describe('auditTokenBudget with addon rules', () => {
+    it('counts addon rules tokens and adds them to total_boot_tokens', () => {
+      // 400 chars core = 100 tokens
+      safeWriteFile(path.join(hubDir, 'rules', 'common.md'), 'a'.repeat(400));
+
+      // 2 addon files: 400 chars each = 800 chars = 200 tokens
+      safeWriteFile(path.join(hubDir, 'rules', 'addons', 'security.md'), 's'.repeat(400));
+      safeWriteFile(path.join(hubDir, 'rules', 'addons', 'testing.md'), 't'.repeat(400));
+
+      const report = auditTokenBudget(hubDir);
+
+      expect(report.core_rules_tokens).toBe(100);
+      expect(report.addons_rules_tokens).toBe(200);
+      expect(report.total_boot_tokens).toBe(300);
+      expect(report.status).toBe('PASS (LEAN)');
+    });
+
+    it('reports EXCEEDED when addon rules push total over TARGET_BUDGET', () => {
+      // 400 chars core = 100 tokens
+      safeWriteFile(path.join(hubDir, 'rules', 'common.md'), 'a'.repeat(400));
+
+      // Addon with 8,000 chars = 2,000 tokens (total 2,100 tokens > 2,000)
+      safeWriteFile(path.join(hubDir, 'rules', 'addons', 'bloated.md'), 'z'.repeat(8000));
+
+      const report = auditTokenBudget(hubDir);
+
+      expect(report.core_rules_tokens).toBe(100);
+      expect(report.addons_rules_tokens).toBe(2000);
+      expect(report.total_boot_tokens).toBe(2100);
+      expect(report.status).toBe('EXCEEDED');
+    });
+
+    it('ignores non-markdown or hidden files in rules/addons', () => {
+      safeWriteFile(path.join(hubDir, 'rules', 'addons', 'security.md'), 's'.repeat(400)); // 100 tokens
+      safeWriteFile(path.join(hubDir, 'rules', 'addons', '.hidden.md'), 'h'.repeat(400));
+      safeWriteFile(path.join(hubDir, 'rules', 'addons', 'notes.txt'), 'n'.repeat(400));
+
+      const report = auditTokenBudget(hubDir);
+      expect(report.addons_rules_tokens).toBe(100);
+    });
+  });
 });

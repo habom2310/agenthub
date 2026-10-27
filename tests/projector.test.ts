@@ -6,6 +6,7 @@ import { setCustomHome } from '../src/core/detector.js';
 import {
   HEADER_GUARD,
   PLATFORM_RULE_FILES,
+  getAddonRuleFiles,
   parseFrontmatter,
   projectAll,
   projectClaudeRules,
@@ -604,6 +605,125 @@ You are the writer.`
       expect(allRes.messages.some((m) => m.includes('Projected CLAUDE.md'))).toBe(true);
       expect(allRes.messages.some((m) => m.includes('Projected AGENTS.md'))).toBe(true);
       expect(allRes.messages.some((m) => m.includes('Projected subagent: test'))).toBe(true);
+    });
+  });
+
+  describe('addon rules projection', () => {
+    beforeEach(() => {
+      // Create base rules
+      safeWriteFile(path.join(hubDir, 'rules', 'common.md'), '# Base Common Rules');
+      // Create addon rules
+      safeWriteFile(
+        path.join(hubDir, 'rules', 'addons', 'security.md'),
+        '# Security Addon Rules\nAlways sanitize input.'
+      );
+      safeWriteFile(
+        path.join(hubDir, 'rules', 'addons', 'testing.md'),
+        '# Testing Addon Rules\nAlways write tests.'
+      );
+      // Non-markdown or hidden file should be ignored
+      safeWriteFile(path.join(hubDir, 'rules', 'addons', '.hidden.md'), '# Hidden');
+      safeWriteFile(path.join(hubDir, 'rules', 'addons', 'notes.txt'), 'Not markdown');
+    });
+
+    it('getAddonRuleFiles returns sorted relative paths and ignores non-markdown/hidden files', () => {
+      const files = getAddonRuleFiles(hubDir);
+      expect(files).toEqual(['addons/security.md', 'addons/testing.md']);
+    });
+
+    it('projects addon rules into Gemini (~/.gemini/GEMINI.md)', () => {
+      const res = projectGeminiRules(homeDir, hubDir);
+      expect(res.success).toBe(true);
+
+      const targetPath = path.join(homeDir, '.gemini', 'GEMINI.md');
+      expect(fs.existsSync(targetPath)).toBe(true);
+
+      const content = fs.readFileSync(targetPath, 'utf-8');
+      expect(content).toContain('# Base Common Rules');
+      expect(content).toContain('# Security Addon Rules');
+      expect(content).toContain('Always sanitize input.');
+      expect(content).toContain('# Testing Addon Rules');
+      expect(content).not.toContain('# Hidden');
+      expect(content).not.toContain('Not markdown');
+    });
+
+    it('projects addon rules to Claude with imports (useImports: true)', () => {
+      const res = projectClaudeRules({ useImports: true, homeDir, hubDir });
+      expect(res.success).toBe(true);
+
+      const targetPath = path.join(homeDir, '.claude', 'CLAUDE.md');
+      const content = fs.readFileSync(targetPath, 'utf-8');
+
+      const securityPosix = path.join(hubDir, 'rules', 'addons', 'security.md').replace(/\\/g, '/');
+      const testingPosix = path.join(hubDir, 'rules', 'addons', 'testing.md').replace(/\\/g, '/');
+
+      expect(content).toContain(`@${securityPosix}`);
+      expect(content).toContain(`@${testingPosix}`);
+      expect(content).not.toMatch(/@.*\\.*/);
+    });
+
+    it('projects addon rules to Claude without imports (useImports: false)', () => {
+      const res = projectClaudeRules({ useImports: false, homeDir, hubDir });
+      expect(res.success).toBe(true);
+
+      const targetPath = path.join(homeDir, '.claude', 'CLAUDE.md');
+      const content = fs.readFileSync(targetPath, 'utf-8');
+
+      expect(content).toContain('# Base Common Rules');
+      expect(content).toContain('# Security Addon Rules');
+      expect(content).toContain('# Testing Addon Rules');
+    });
+
+    it('projects addon rules to Codex (~/.codex/AGENTS.md and ChatGPT export)', () => {
+      const res = projectCodexRules(homeDir, hubDir);
+      expect(res.success).toBe(true);
+
+      const codexPath = path.join(homeDir, '.codex', 'AGENTS.md');
+      const codexContent = fs.readFileSync(codexPath, 'utf-8');
+      expect(codexContent).toContain('# Base Common Rules');
+      expect(codexContent).toContain('# Security Addon Rules');
+      expect(codexContent).toContain('# Testing Addon Rules');
+
+      const exportPath = path.join(hubDir, 'export', 'chatgpt_custom_instructions.md');
+      const exportContent = fs.readFileSync(exportPath, 'utf-8');
+      expect(exportContent).toContain('# Security Addon Rules');
+      expect(exportContent).toContain('# Testing Addon Rules');
+    });
+
+    it('projects addon rules to Cursor (.cursor/rules/agentrc.mdc and .cursorrules)', () => {
+      const cursorDir = path.join(homeDir, '.cursor');
+      ensureDir(cursorDir);
+
+      const res = projectCursorRules(cursorDir, homeDir, hubDir);
+      expect(res.success).toBe(true);
+
+      const mdcPath = path.join(cursorDir, 'rules', 'agentrc.mdc');
+      const mdcContent = fs.readFileSync(mdcPath, 'utf-8');
+      expect(mdcContent).toContain('# Security Addon Rules');
+      expect(mdcContent).toContain('# Testing Addon Rules');
+
+      const cursorrulesPath = path.join(homeDir, '.cursorrules');
+      const cursorrulesContent = fs.readFileSync(cursorrulesPath, 'utf-8');
+      expect(cursorrulesContent).toContain('# Security Addon Rules');
+      expect(cursorrulesContent).toContain('# Testing Addon Rules');
+    });
+
+    it('projects addon rules to Windsurf (.windsurf/memories/global_rules.md and .windsurfrules)', () => {
+      const windsurfDir = path.join(homeDir, '.windsurf');
+      ensureDir(windsurfDir);
+
+      const res = projectWindsurfRules(windsurfDir, homeDir, hubDir);
+      expect(res.success).toBe(true);
+
+      const memoryPath = path.join(windsurfDir, 'memories', 'global_rules.md');
+      const memoryContent = fs.readFileSync(memoryPath, 'utf-8');
+      expect(memoryContent).toContain('# Security Addon Rules');
+      expect(memoryContent).toContain('# Testing Addon Rules');
+
+      const windsurfRulesPath = path.join(homeDir, '.windsurfrules');
+      const windsurfRulesContent = fs.readFileSync(windsurfRulesPath, 'utf-8');
+      expect(windsurfRulesContent).toContain('# Security Addon Rules');
+      expect(windsurfRulesContent).toContain('# Testing Addon Rules');
     });
   });
 });

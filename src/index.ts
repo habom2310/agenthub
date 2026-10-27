@@ -48,6 +48,7 @@ export {
 export {
   HEADER_GUARD,
   PLATFORM_RULE_FILES,
+  getAddonRuleFiles,
   parseFrontmatter,
   projectGeminiRules,
   projectClaudeRules,
@@ -148,4 +149,12 @@ export {
   type BudgetAuditResult,
 } from './core/token-budget.js';
 
-
+// Core Manifest
+export {
+  DEFAULT_PLATFORMS,
+  loadManifest,
+  inferManifest,
+  getEffectiveManifest,
+  writeManifest,
+  type AgentPackageManifest,
+} from './core/manifest.js';

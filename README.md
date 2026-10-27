@@ -20,28 +20,28 @@ Run directly via `npx` (requires Node.js 18+):
 
 ```bash
 # Initialize ~/.agenthub with starter rules, agents, and templates
-npx agenthub init
+npx @habom2310/agenthub init
 
 # Or migrate cleanly from an existing ~/.agentrc installation
-npx agenthub init --migrate ~/.agentrc
+npx @habom2310/agenthub init --migrate ~/.agentrc
 
 # Run comprehensive system diagnostics
-npx agenthub doctor
+npx @habom2310/agenthub doctor
 
 # Auto-repair broken junctions, missing rules, or unlinked skills
-npx agenthub doctor --fix
+npx @habom2310/agenthub doctor --fix
 
 # Check assistant platforms status
-npx agenthub detect
+npx @habom2310/agenthub detect
 
 # Synchronize MCP servers across Claude and Gemini
-npx agenthub mcp sync
+npx @habom2310/agenthub mcp sync
 ```
 
 Alternatively, install globally:
 
 ```bash
-npm install -g agenthub
+npm install -g @habom2310/agenthub
 agenthub doctor
 ```
 
