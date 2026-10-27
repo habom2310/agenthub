@@ -77,3 +77,43 @@ export {
   type PromoteResult,
 } from './core/promoter.js';
 
+// Core Linker
+export {
+  linkSkillsForClaude,
+  linkSkillsForGemini,
+  linkSkillsForCodex,
+  projectCodexSkillManifests,
+  type LinkResult,
+} from './core/linker.js';
+
+// Core MCP Sync
+export {
+  readJsonSafely,
+  normalizeServerForHub,
+  adaptServerForClaude,
+  adaptServerForGemini,
+  getMcpStatus,
+  syncMcpServers,
+  type McpServerConfig,
+  type McpPlatformStatus,
+  type McpStatusReport,
+  type SyncMcpResult,
+} from './core/mcp-sync.js';
+
+// Core Connector
+export {
+  updateHubManifest,
+  connectCursor,
+  connectWindsurf,
+  connectPlatform,
+  type ConnectResult,
+} from './core/connector.js';
+
+// Core Doctor
+export {
+  runDoctor,
+  type DoctorOptions,
+  type DoctorResult,
+} from './core/doctor.js';
+
+
