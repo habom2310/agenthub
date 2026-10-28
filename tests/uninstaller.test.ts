@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setCustomHome } from '../src/core/detector.js';
+import { projectAll } from '../src/core/projector.js';
+import { initHub } from '../src/core/scaffold.js';
 import {
   cleanupGeneratedRules,
   cleanupJunctions,
@@ -85,6 +87,51 @@ describe('uninstaller', () => {
       expect(fs.readFileSync(path.join(homeDir, '.codex', 'config.toml'), 'utf-8')).toBe(
         'model = "gpt-4"'
       );
+    });
+
+    it('rejects path traversal attempting to escape homeDir', () => {
+      const backupDir = path.join(hubDir, 'backups', 'pre-agenthub-evil');
+      ensureDir(backupDir);
+      safeWriteFile(path.join(backupDir, 'valid.txt'), 'valid');
+
+      const spy = vi.spyOn(fs, 'readdirSync').mockImplementationOnce(() => [
+        {
+          name: '../../evil.txt',
+          isDirectory: () => false,
+          isFile: () => true,
+          isSymbolicLink: () => false,
+        } as any,
+      ]);
+
+      expect(() => restoreFromBackup(backupDir, homeDir)).toThrow(/path traversal/i);
+      spy.mockRestore();
+    });
+
+    it('skips non-files and directory symlinks cleanly', () => {
+      const backupDir = path.join(hubDir, 'backups', 'pre-agenthub-symlinks');
+      ensureDir(backupDir);
+      safeWriteFile(path.join(backupDir, 'valid.txt'), 'valid content');
+
+      const spy = vi.spyOn(fs, 'readdirSync').mockImplementationOnce(() => [
+        {
+          name: 'valid.txt',
+          isDirectory: () => false,
+          isFile: () => true,
+          isSymbolicLink: () => false,
+        } as any,
+        {
+          name: 'symlink-dir',
+          isDirectory: () => false,
+          isFile: () => false,
+          isSymbolicLink: () => true,
+        } as any,
+      ]);
+
+      const restored = restoreFromBackup(backupDir, homeDir);
+      expect(restored).toEqual(['valid.txt']);
+      expect(fs.existsSync(path.join(homeDir, 'valid.txt'))).toBe(true);
+      expect(fs.existsSync(path.join(homeDir, 'symlink-dir'))).toBe(false);
+      spy.mockRestore();
     });
   });
 
@@ -191,6 +238,7 @@ describe('uninstaller', () => {
 
       expect(result.success).toBe(true);
       expect(result.unlinkedJunctions).toContain(claudeSkills);
+      expect(result.restoredJunctions).toContain(claudeSkills);
 
       // Verify skills.old was renamed to skills
       expect(fs.existsSync(skillsOld)).toBe(false);
@@ -337,6 +385,113 @@ describe('uninstaller', () => {
       expect(result.success).toBe(true);
       expect(result.purgedHub).toBe(true);
       expect(fs.existsSync(hubDir)).toBe(false);
+    });
+
+    it('Test 7: Full real projection (initHub -> projectAll -> uninstallHub) cleanly removes all projected files', () => {
+      // 1. Initialize real hub in custom sandbox
+      initHub({ force: true, customHome: homeDir });
+
+      // Setup connected assistants
+      ensureDir(path.join(homeDir, '.cursor'));
+      ensureDir(path.join(homeDir, '.windsurf'));
+
+      // 2. Project all rules and subagents
+      const projectRes = projectAll({ homeDir, hubDir });
+      expect(projectRes.success).toBe(true);
+
+      const geminiMd = path.join(homeDir, '.gemini', 'GEMINI.md');
+      const codexAgents = path.join(homeDir, '.codex', 'AGENTS.md');
+      const claudeMd = path.join(homeDir, '.claude', 'CLAUDE.md');
+      const cursorrules = path.join(homeDir, '.cursorrules');
+      const cursorMdc = path.join(homeDir, '.cursor', 'rules', 'agentrc.mdc');
+      const cursorHubMdc = path.join(homeDir, '.cursor', 'rules', 'agenthub.mdc');
+      safeWriteFile(cursorHubMdc, '# AgentHub MDC');
+      const windsurfrules = path.join(homeDir, '.windsurfrules');
+      const windsurfGlobal = path.join(homeDir, '.windsurf', 'memories', 'global_rules.md');
+      const scoutClaude = path.join(homeDir, '.claude', 'agents', 'scout.md');
+      const implementerClaude = path.join(homeDir, '.claude', 'agents', 'implementer.md');
+      const reviewerGemini = path.join(homeDir, '.gemini', 'config', 'agents', 'reviewer.md');
+
+      // Verify projected files exist before uninstall
+      expect(fs.existsSync(geminiMd)).toBe(true);
+      expect(fs.existsSync(codexAgents)).toBe(true);
+      expect(fs.existsSync(claudeMd)).toBe(true);
+      expect(fs.existsSync(cursorrules)).toBe(true);
+      expect(fs.existsSync(cursorMdc)).toBe(true);
+      expect(fs.existsSync(cursorHubMdc)).toBe(true);
+      expect(fs.existsSync(windsurfrules)).toBe(true);
+      expect(fs.existsSync(windsurfGlobal)).toBe(true);
+      expect(fs.existsSync(scoutClaude)).toBe(true);
+      expect(fs.existsSync(implementerClaude)).toBe(true);
+      expect(fs.existsSync(reviewerGemini)).toBe(true);
+
+      // 3. Uninstall
+      const uninstallRes = uninstallHub({ home: homeDir, hub: hubDir });
+      expect(uninstallRes.success).toBe(true);
+
+      // Verify all projected files are cleanly removed
+      expect(fs.existsSync(geminiMd)).toBe(false);
+      expect(fs.existsSync(codexAgents)).toBe(false);
+      expect(fs.existsSync(claudeMd)).toBe(false);
+      expect(fs.existsSync(cursorrules)).toBe(false);
+      expect(fs.existsSync(cursorMdc)).toBe(false);
+      expect(fs.existsSync(cursorHubMdc)).toBe(false);
+      expect(fs.existsSync(windsurfrules)).toBe(false);
+      expect(fs.existsSync(windsurfGlobal)).toBe(false);
+      expect(fs.existsSync(scoutClaude)).toBe(false);
+      expect(fs.existsSync(implementerClaude)).toBe(false);
+      expect(fs.existsSync(reviewerGemini)).toBe(false);
+    });
+
+    it('Test 8: Preserves non-agenthub junctions pointing to other directories', () => {
+      const otherSkillsDir = path.join(tmpDir, 'other-skills');
+      ensureDir(otherSkillsDir);
+      safeWriteFile(path.join(otherSkillsDir, 'custom', 'SKILL.md'), '# Custom Skill');
+
+      const claudeSkills = path.join(homeDir, '.claude', 'skills');
+      createJunction(otherSkillsDir, claudeSkills);
+      expect(isJunctionOrSymlink(claudeSkills)).toBe(true);
+
+      const result = uninstallHub({ home: homeDir, hub: hubDir });
+      expect(result.success).toBe(true);
+      expect(result.unlinkedJunctions).not.toContain(claudeSkills);
+      expect(isJunctionOrSymlink(claudeSkills)).toBe(true);
+      expect(fs.existsSync(path.join(claudeSkills, 'custom', 'SKILL.md'))).toBe(true);
+    });
+
+    it('Test 9: Restores .gemini/config/GEMINI.md.backup and .gemini/GEMINI.md.backup back to GEMINI.md', () => {
+      const geminiConfigDir = path.join(homeDir, '.gemini', 'config');
+      ensureDir(geminiConfigDir);
+
+      safeWriteFile(
+        path.join(homeDir, '.gemini', 'GEMINI.md'),
+        '<!-- AUTOGENERATED BY AGENTRC -->\nautogenerated content'
+      );
+      safeWriteFile(
+        path.join(geminiConfigDir, 'GEMINI.md.backup'),
+        '# Original Gemini Config Rules'
+      );
+
+      const result = uninstallHub({ home: homeDir, hub: hubDir });
+      expect(result.success).toBe(true);
+
+      expect(fs.existsSync(path.join(geminiConfigDir, 'GEMINI.md.backup'))).toBe(false);
+      expect(fs.existsSync(path.join(geminiConfigDir, 'GEMINI.md'))).toBe(true);
+      expect(fs.readFileSync(path.join(geminiConfigDir, 'GEMINI.md'), 'utf-8')).toBe(
+        '# Original Gemini Config Rules'
+      );
+      expect(fs.existsSync(path.join(homeDir, '.gemini', 'GEMINI.md'))).toBe(false);
+    });
+
+    it('Test 10: Refuses to purge home directory or filesystem root', () => {
+      expect(() => uninstallHub({ home: homeDir, hub: homeDir, purge: true })).toThrow(
+        /refusing to purge hub directory/i
+      );
+
+      const rootDir = path.parse(homeDir).root;
+      expect(() => uninstallHub({ home: homeDir, hub: rootDir, purge: true })).toThrow(
+        /refusing to purge hub directory/i
+      );
     });
   });
 });

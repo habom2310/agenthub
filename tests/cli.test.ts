@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildCli, runCli } from '../src/cli.js';
 import { setCustomHome } from '../src/core/detector.js';
 import { initHub } from '../src/core/scaffold.js';
-import { ensureDir, safeWriteFile } from '../src/utils/fs.js';
+import { createJunction, ensureDir, isJunctionOrSymlink, safeWriteFile } from '../src/utils/fs.js';
 
 function stripAnsi(str: string): string {
   return str.replace(/\u001b\[[0-9;]*m/g, '');
@@ -601,12 +601,24 @@ describe('CLI Integration', () => {
     ensureDir(claudeDir);
     safeWriteFile(path.join(claudeDir, 'CLAUDE.md'), '# Original Claude Rules');
 
+    const geminiDir = path.join(sandbox, '.gemini');
+    ensureDir(geminiDir);
+    safeWriteFile(path.join(geminiDir, 'GEMINI.md'), '# Original Gemini Rules');
+
     // 2. Initialize hub (creates pre-agenthub backup)
     await runCli(['-H', sandbox, 'init']);
 
-    // 3. Project rules (updates CLAUDE.md to agenthub)
+    // 3. Project rules (updates CLAUDE.md and GEMINI.md to agenthub)
     await runCli(['-H', sandbox, 'project']);
     expect(fs.readFileSync(path.join(claudeDir, 'CLAUDE.md'), 'utf-8')).not.toBe('# Original Claude Rules');
+    expect(fs.readFileSync(path.join(geminiDir, 'GEMINI.md'), 'utf-8')).not.toBe('# Original Gemini Rules');
+
+    // Create a skills junction pointing to .agenthub/skills
+    const claudeSkills = path.join(claudeDir, 'skills');
+    const hubSkills = path.join(sandbox, '.agenthub', 'skills');
+    ensureDir(hubSkills);
+    createJunction(hubSkills, claudeSkills);
+    expect(isJunctionOrSymlink(claudeSkills)).toBe(true);
 
     // 4. Run uninstall in dry-run mode
     logs = [];
@@ -616,6 +628,8 @@ describe('CLI Integration', () => {
     expect(output).toContain('Rollback completed successfully');
     // Still not reverted because dryRun
     expect(fs.readFileSync(path.join(claudeDir, 'CLAUDE.md'), 'utf-8')).not.toBe('# Original Claude Rules');
+    expect(fs.readFileSync(path.join(geminiDir, 'GEMINI.md'), 'utf-8')).not.toBe('# Original Gemini Rules');
+    expect(isJunctionOrSymlink(claudeSkills)).toBe(true);
 
     // 5. Run uninstall with -y (without purge)
     logs = [];
@@ -623,10 +637,14 @@ describe('CLI Integration', () => {
     output = stripAnsi(logs.join('\n'));
     expect(output).toContain('Rollback completed successfully');
     expect(output).toContain('Restored from backup');
+    expect(output).toContain('Unlinked junctions');
     expect(output).toContain('Hub directory preserved');
 
-    // Verify CLAUDE.md was rolled back to original
+    // Verify CLAUDE.md and GEMINI.md were rolled back to original
     expect(fs.readFileSync(path.join(claudeDir, 'CLAUDE.md'), 'utf-8')).toBe('# Original Claude Rules');
+    expect(fs.readFileSync(path.join(geminiDir, 'GEMINI.md'), 'utf-8')).toBe('# Original Gemini Rules');
+    // Junction was unlinked
+    expect(isJunctionOrSymlink(claudeSkills)).toBe(false);
     // Hub directory still exists
     expect(fs.existsSync(path.join(sandbox, '.agenthub'))).toBe(true);
 
