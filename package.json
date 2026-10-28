@@ -17,7 +17,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "author": "habom2310",
   "license": "MIT",
@@ -58,6 +58,6 @@
     "@types/node": "^22.13.0",
     "tsup": "^8.3.6",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.5"
+    "vitest": "^4.1.12"
   }
 }
