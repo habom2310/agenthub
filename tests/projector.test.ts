@@ -580,6 +580,35 @@ You are the writer.`
       expect(geminiWriterContent).toContain('model: pro'); // smart -> pro
       expect(geminiWriterContent).toContain('- write_file');
     });
+
+    it('projects <!-- claude-only --> blocks to Claude and strips them for Gemini', () => {
+      safeWriteFile(
+        path.join(hubDir, 'agents', 'sample.md'),
+        `---
+name: sample
+description: Sample agent
+---
+
+Shared intro.
+
+<!-- claude-only -->
+Claude-only text.
+<!-- /claude-only -->
+
+Shared outro.`
+      );
+
+      expect(projectSubagents(homeDir, hubDir).success).toBe(true);
+
+      const claude = fs.readFileSync(path.join(homeDir, '.claude', 'agents', 'sample.md'), 'utf-8');
+      expect(claude).toContain('Shared intro.\n\nClaude-only text.\n\nShared outro.');
+      expect(claude).not.toContain('claude-only');
+
+      const gemini = fs.readFileSync(path.join(homeDir, '.gemini', 'config', 'agents', 'sample.md'), 'utf-8');
+      expect(gemini).toContain('Shared intro.\n\n\nShared outro.');
+      expect(gemini).not.toContain('Claude-only text.');
+      expect(gemini).not.toContain('claude-only');
+    });
   });
 
   describe('projectRules and projectAll', () => {
