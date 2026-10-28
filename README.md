@@ -20,13 +20,29 @@ Supports:
 
 ## Installation
 
-### Option 1: Instant Run with `npx` (No Install Required)
+### Option 1: Ask Your AI to Install
+Copy this prompt into Claude Code, Codex, Antigravity, Cursor, or any assistant that can run terminal commands:
+
+```text
+Install AgentHub (https://github.com/habom2310/agenthub) for me:
+
+1. Check that Node.js 20 or later is installed (`node -v`). If not, stop and tell me.
+2. Install it globally: `npm install -g @habom2310/agenthub`
+3. Verify: `agenthub --version`
+4. Show which AI assistants it detects: `agenthub detect`
+5. If `~/.agenthub` does not exist yet, run `agenthub init`. If it already exists, ask me before changing it.
+6. Run `agenthub doctor` and summarize the result. If it reports problems, show them to me and ask before running `agenthub doctor --fix`.
+
+Finish with a short summary of what was installed and anything I need to do next.
+```
+
+### Option 2: Instant Run with `npx` (No Install Required)
 You can run any command on demand without installing:
 ```bash
 npx @habom2310/agenthub <command>
 ```
 
-### Option 2: Global Installation (Recommended)
+### Option 3: Global Installation (Recommended)
 Install globally to get the standalone `agenthub` executable in your terminal:
 
 ```bash
