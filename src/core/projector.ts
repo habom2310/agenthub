@@ -21,6 +21,8 @@ export const PLATFORM_RULE_FILES: Record<string, string[]> = {
 
 // Agent body text between these markers is projected to Claude Code only.
 const CLAUDE_ONLY_BLOCK = /<!-- claude-only -->\r?\n([\s\S]*?)<!-- \/claude-only -->(?:\r?\n|$)/g;
+// Any marker left after the block is replaced means a malformed block.
+const CLAUDE_ONLY_MARKER = /<!--\s*\/?claude-only\s*-->/;
 
 export interface AgentFrontmatter {
   name?: string;
@@ -455,6 +457,11 @@ export function projectSubagents(
     const claudeContent = claudeFm.join('\n') + formattedBody.replace(CLAUDE_ONLY_BLOCK, '$1');
     safeWriteFile(path.join(claudeAgentsDir, `${name}.md`), claudeContent);
 
+    if (CLAUDE_ONLY_MARKER.test(agyContent)) {
+      results.push(
+        `Warning: ${name} has a malformed claude-only block (put each marker on its own line, no nesting); its text was projected to Gemini too`
+      );
+    }
     results.push(`Projected subagent: ${name}`);
   }
 
