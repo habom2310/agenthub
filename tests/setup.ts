@@ -9,6 +9,7 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenthub-test-home-'));
 process.env.HOME = home;
 process.env.USERPROFILE = home;
 delete process.env.AGENTHUB_HOME;
+delete process.env.AGENTHUB_HUB;
 
 afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
