@@ -811,6 +811,7 @@ export function buildCli(): Command {
     .option('-f, --force', 'Force sharing even if security risks or secrets are detected')
     .option('--publish', 'Publish package to AgentHub registry after pushing')
     .option('--registry <url>', 'Override registry URL')
+    .option('--token <token>', 'Registry authentication token for publishing')
     .option('-H, --home <dir>', 'Sets custom home directory')
     .action(async (options) => {
       applyHomeOverride(options);
@@ -855,6 +856,7 @@ export function buildCli(): Command {
 
         const pubResult = await publishToRegistry(payload, {
           registryUrl: options.registry,
+          token: options.token,
         });
 
         if (pubResult.success) {

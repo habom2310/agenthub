@@ -47,6 +47,7 @@ export interface SearchRegistryResult {
 
 export interface PublishToRegistryOptions {
   registryUrl?: string;
+  token?: string;
 }
 
 export interface PublishToRegistryResult {
@@ -184,12 +185,19 @@ export async function publishToRegistry(
     const baseUrl = getCleanBaseUrl(options?.registryUrl);
     const url = `${baseUrl}/api/index`;
 
+    const rawToken = options?.token || process.env.AGENTHUB_TOKEN || process.env.AGENTHUB_PUBLISH_SECRET;
+    const token = rawToken?.trim();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
     const res = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
+      headers,
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(10000),
     });

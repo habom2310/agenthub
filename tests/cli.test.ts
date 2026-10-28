@@ -787,4 +787,78 @@ describe('CLI Integration', () => {
       globalThis.fetch = origFetch;
     }
   });
+
+  it('share with --publish --token sends token authorization header to registry', async () => {
+    // 1. Initialize hub
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(['-H', sandbox, 'init'], { from: 'user' });
+
+    // 2. Configure a bare remote
+    const bareRemote = path.join(sandbox, 'publish-token-remote.git');
+    spawnSync('git', ['init', '--bare', bareRemote]);
+
+    const hubDir = path.join(sandbox, '.agenthub');
+    spawnSync('git', ['init', '-b', 'main'], { cwd: hubDir });
+    spawnSync('git', ['remote', 'add', 'origin', bareRemote], { cwd: hubDir });
+
+    const origFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 201,
+        json: async () => ({
+          message: 'Package indexed successfully',
+          package: { id: 'alice/my-agent' },
+        }),
+      } as Response);
+
+      logs = [];
+      errors = [];
+      await runCli(['-H', sandbox, 'share', '--publish', '--token', 'my-secret-token', '-m', 'Publish test with token']);
+      const output = stripAnsi(logs.join('\n'));
+
+      expect(output).toContain('Successfully published and indexed "alice/my-agent" in registry!');
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      const [, calledInit] = (globalThis.fetch as any).mock.calls[0];
+      expect(calledInit.headers['Authorization']).toBe('Bearer my-secret-token');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('share with --publish sets process.exitCode = 1 and logs error when registry returns 401', async () => {
+    // 1. Initialize hub
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(['-H', sandbox, 'init'], { from: 'user' });
+
+    // 2. Configure a bare remote
+    const bareRemote = path.join(sandbox, 'publish-fail-remote.git');
+    spawnSync('git', ['init', '--bare', bareRemote]);
+
+    const hubDir = path.join(sandbox, '.agenthub');
+    spawnSync('git', ['init', '-b', 'main'], { cwd: hubDir });
+    spawnSync('git', ['remote', 'add', 'origin', bareRemote], { cwd: hubDir });
+
+    const origFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        text: async () => JSON.stringify({ error: 'Unauthorized: Invalid or missing publish token.' }),
+      } as Response);
+
+      logs = [];
+      errors = [];
+      await runCli(['-H', sandbox, 'share', '--publish', '-m', 'Publish unauthorized test']);
+      const errOutput = stripAnsi(errors.join('\n'));
+
+      expect(process.exitCode).toBe(1);
+      expect(errOutput).toContain('Failed to publish to registry: Unauthorized: Invalid or missing publish token.');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
 });

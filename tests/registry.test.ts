@@ -15,10 +15,14 @@ import { ensureDir, safeWriteFile } from '../src/utils/fs.js';
 describe('Registry Core Module', () => {
   const originalFetch = globalThis.fetch;
   const originalEnv = process.env.AGENTHUB_REGISTRY_URL;
+  const originalToken = process.env.AGENTHUB_TOKEN;
+  const originalSecret = process.env.AGENTHUB_PUBLISH_SECRET;
 
   beforeEach(() => {
     vi.restoreAllMocks();
     delete process.env.AGENTHUB_REGISTRY_URL;
+    delete process.env.AGENTHUB_TOKEN;
+    delete process.env.AGENTHUB_PUBLISH_SECRET;
   });
 
   afterEach(() => {
@@ -27,6 +31,16 @@ describe('Registry Core Module', () => {
       process.env.AGENTHUB_REGISTRY_URL = originalEnv;
     } else {
       delete process.env.AGENTHUB_REGISTRY_URL;
+    }
+    if (originalToken !== undefined) {
+      process.env.AGENTHUB_TOKEN = originalToken;
+    } else {
+      delete process.env.AGENTHUB_TOKEN;
+    }
+    if (originalSecret !== undefined) {
+      process.env.AGENTHUB_PUBLISH_SECRET = originalSecret;
+    } else {
+      delete process.env.AGENTHUB_PUBLISH_SECRET;
     }
   });
 
@@ -203,6 +217,113 @@ describe('Registry Core Module', () => {
 
       expect(res.success).toBe(false);
       expect(res.error).toContain('Network is unreachable');
+    });
+
+    it('attaches Authorization: Bearer <token> when token option is present', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 201,
+        json: async () => ({
+          message: 'Package indexed successfully',
+          package: { id: 'alice/test' },
+        }),
+      } as Response);
+
+      await publishToRegistry({ name: 'test' }, { token: 'my-custom-token' });
+
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      const [, calledInit] = (globalThis.fetch as any).mock.calls[0];
+      expect(calledInit.headers['Authorization']).toBe('Bearer my-custom-token');
+    });
+
+    it('attaches Authorization: Bearer <token> when AGENTHUB_TOKEN env var is present', async () => {
+      process.env.AGENTHUB_TOKEN = 'env-secret-token';
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 201,
+        json: async () => ({
+          message: 'Package indexed successfully',
+          package: { id: 'alice/test' },
+        }),
+      } as Response);
+
+      await publishToRegistry({ name: 'test' });
+
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      const [, calledInit] = (globalThis.fetch as any).mock.calls[0];
+      expect(calledInit.headers['Authorization']).toBe('Bearer env-secret-token');
+    });
+
+    it('attaches Authorization: Bearer <token> when AGENTHUB_PUBLISH_SECRET env var is present', async () => {
+      process.env.AGENTHUB_PUBLISH_SECRET = 'publish-secret-token';
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 201,
+        json: async () => ({
+          message: 'Package indexed successfully',
+          package: { id: 'alice/test' },
+        }),
+      } as Response);
+
+      await publishToRegistry({ name: 'test' });
+
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      const [, calledInit] = (globalThis.fetch as any).mock.calls[0];
+      expect(calledInit.headers['Authorization']).toBe('Bearer publish-secret-token');
+    });
+
+    it('options.token overrides process.env.AGENTHUB_TOKEN when both are present', async () => {
+      process.env.AGENTHUB_TOKEN = 'env-token';
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 201,
+        json: async () => ({
+          message: 'Package indexed successfully',
+          package: { id: 'alice/test' },
+        }),
+      } as Response);
+
+      await publishToRegistry({ name: 'test' }, { token: 'explicit-option-token' });
+
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      const [, calledInit] = (globalThis.fetch as any).mock.calls[0];
+      expect(calledInit.headers['Authorization']).toBe('Bearer explicit-option-token');
+    });
+
+    it('empty or whitespace-only token does not attach Authorization header', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 201,
+        json: async () => ({
+          message: 'Package indexed successfully',
+          package: { id: 'alice/test' },
+        }),
+      } as Response);
+
+      // Whitespace option token
+      await publishToRegistry({ name: 'test' }, { token: '   ' });
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      let [, calledInit] = (globalThis.fetch as any).mock.calls[0];
+      expect(calledInit.headers['Authorization']).toBeUndefined();
+
+      // Whitespace env token
+      process.env.AGENTHUB_TOKEN = '   ';
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 201,
+        json: async () => ({
+          message: 'Package indexed successfully',
+          package: { id: 'alice/test' },
+        }),
+      } as Response);
+
+      await publishToRegistry({ name: 'test' });
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      [, calledInit] = (globalThis.fetch as any).mock.calls[0];
+      expect(calledInit.headers['Authorization']).toBeUndefined();
     });
   });
 
