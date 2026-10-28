@@ -580,6 +580,83 @@ You are the writer.`
       expect(geminiWriterContent).toContain('model: pro'); // smart -> pro
       expect(geminiWriterContent).toContain('- write_file');
     });
+
+    it('projects <!-- claude-only --> blocks to Claude and strips them for Gemini', () => {
+      safeWriteFile(
+        path.join(hubDir, 'agents', 'sample.md'),
+        `---
+name: sample
+description: Sample agent
+---
+
+Shared intro.
+
+<!-- claude-only -->
+Claude-only text.
+<!-- /claude-only -->
+
+Shared outro.`
+      );
+
+      expect(projectSubagents(homeDir, hubDir).success).toBe(true);
+
+      const claude = fs.readFileSync(path.join(homeDir, '.claude', 'agents', 'sample.md'), 'utf-8');
+      expect(claude).toContain('Shared intro.\n\nClaude-only text.\n\nShared outro.');
+      expect(claude).not.toContain('claude-only');
+
+      const gemini = fs.readFileSync(path.join(homeDir, '.gemini', 'config', 'agents', 'sample.md'), 'utf-8');
+      expect(gemini).toContain('Shared intro.\n\n\nShared outro.');
+      expect(gemini).not.toContain('Claude-only text.');
+      expect(gemini).not.toContain('claude-only');
+    });
+
+    it('handles CRLF line endings and several claude-only blocks', () => {
+      safeWriteFile(
+        path.join(hubDir, 'agents', 'multi.md'),
+        '---\r\nname: multi\r\ndescription: Multi agent\r\n---\r\n\r\nA\r\n<!-- claude-only -->\r\nOne\r\n<!-- /claude-only -->\r\nB\r\n<!-- claude-only -->\r\nTwo\r\n<!-- /claude-only -->\r\nC\r\n'
+      );
+
+      const res = projectSubagents(homeDir, hubDir);
+      expect(res.results.some((r) => r.startsWith('Warning'))).toBe(false);
+
+      const claude = fs.readFileSync(path.join(homeDir, '.claude', 'agents', 'multi.md'), 'utf-8');
+      expect(claude).toContain('A\r\nOne\r\nB\r\nTwo\r\nC');
+      expect(claude).not.toContain('claude-only');
+
+      const gemini = fs.readFileSync(path.join(homeDir, '.gemini', 'config', 'agents', 'multi.md'), 'utf-8');
+      expect(gemini).toContain('A\r\nB\r\nC');
+      expect(gemini).not.toContain('One');
+      expect(gemini).not.toContain('Two');
+    });
+
+    it('warns when a claude-only block is not closed', () => {
+      safeWriteFile(
+        path.join(hubDir, 'agents', 'open.md'),
+        '---\nname: open\ndescription: Open agent\n---\n\nShared.\n<!-- claude-only -->\nClaude-only text.\n'
+      );
+
+      const res = projectSubagents(homeDir, hubDir);
+      expect(res.results).toContain(
+        'Warning: open has a malformed claude-only block (put each marker on its own line, no nesting); its text was projected to Gemini too'
+      );
+    });
+
+    it('handles a claude-only block that ends the file without a trailing newline', () => {
+      safeWriteFile(
+        path.join(hubDir, 'agents', 'tail.md'),
+        '---\nname: tail\ndescription: Tail agent\n---\n\nShared.\n\n<!-- claude-only -->\nClaude-only text.\n<!-- /claude-only -->'
+      );
+
+      expect(projectSubagents(homeDir, hubDir).success).toBe(true);
+
+      const claude = fs.readFileSync(path.join(homeDir, '.claude', 'agents', 'tail.md'), 'utf-8');
+      expect(claude).toContain('Shared.\n\nClaude-only text.\n');
+      expect(claude).not.toContain('claude-only');
+
+      const gemini = fs.readFileSync(path.join(homeDir, '.gemini', 'config', 'agents', 'tail.md'), 'utf-8');
+      expect(gemini).not.toContain('Claude-only text.');
+      expect(gemini).not.toContain('claude-only');
+    });
   });
 
   describe('projectRules and projectAll', () => {

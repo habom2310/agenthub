@@ -189,7 +189,7 @@ export function buildCli(): Command {
       applyHomeOverride(options);
       const res = projectAll({ useImports: options.imports !== false });
       for (const msg of res.messages) {
-        console.log(res.success ? pc.green(`✓ ${msg}`) : pc.yellow(`- ${msg}`));
+        console.log(res.success && !msg.startsWith('Warning') ? pc.green(`✓ ${msg}`) : pc.yellow(`- ${msg}`));
       }
       if (!res.success) {
         process.exitCode = 1;
