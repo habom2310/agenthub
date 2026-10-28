@@ -581,6 +581,35 @@ You are the writer.`
       expect(geminiWriterContent).toContain('- write_file');
     });
 
+    it('applies claude_model, claude_tools and permissionMode to the Claude agent only', () => {
+      safeWriteFile(
+        path.join(hubDir, 'agents', 'custom.md'),
+        `---
+name: custom
+description: Custom agent
+tier: inherit
+permissionMode: auto
+claude_model: claude-haiku-5-5
+claude_tools: Bash, Read, Edit, Write, Grep, Glob, ToolSearch
+---
+
+Body.`
+      );
+
+      expect(projectSubagents(homeDir, hubDir).success).toBe(true);
+
+      const claude = fs.readFileSync(path.join(homeDir, '.claude', 'agents', 'custom.md'), 'utf-8');
+      expect(claude).toContain('model: claude-haiku-5-5');
+      expect(claude).toContain('permissionMode: auto');
+      expect(claude).toContain('tools: Bash, Read, Edit, Write, Grep, Glob, ToolSearch');
+      expect(claude).not.toContain('claude_');
+
+      const gemini = fs.readFileSync(path.join(homeDir, '.gemini', 'config', 'agents', 'custom.md'), 'utf-8');
+      expect(gemini).toContain('model: inherit');
+      expect(gemini).not.toContain('permissionMode');
+      expect(gemini).not.toContain('ToolSearch');
+    });
+
     it('projects <!-- claude-only --> blocks to Claude and strips them for Gemini', () => {
       safeWriteFile(
         path.join(hubDir, 'agents', 'sample.md'),
