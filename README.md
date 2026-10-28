@@ -29,8 +29,8 @@ Install AgentHub (https://github.com/habom2310/agenthub) for me:
 1. Check that Node.js 20 or later is installed (`node -v`). If not, stop and tell me.
 2. Install it globally: `npm install -g @habom2310/agenthub`
 3. Verify: `agenthub --version`
-4. Show which AI assistants it detects: `agenthub detect`
-5. If `~/.agenthub` does not exist yet, run `agenthub init`. If it already exists, ask me before changing it.
+4. Run `agenthub detect` and show me the hub path and which AI assistants it found.
+5. If `detect` reports the hub status as "Not initialized", run `agenthub init`. If it reports "Active", ask me before changing it.
 6. Run `agenthub doctor` and summarize the result. If it reports problems, show them to me and ask before running `agenthub doctor --fix`.
 
 Finish with a short summary of what was installed and anything I need to do next.
