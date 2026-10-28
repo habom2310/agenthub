@@ -58,43 +58,13 @@ describe('detector', () => {
       }
     });
 
-    it('falls back to AGENTRC environment variables when AGENTHUB is unset', () => {
-      setCustomHome(null, null);
-      const origHubHome = process.env.AGENTHUB_HOME;
-      const origHubHub = process.env.AGENTHUB_HUB;
-      const origRcHome = process.env.AGENTRC_HOME;
-      const origRcHub = process.env.AGENTRC_HUB;
-
-      delete process.env.AGENTHUB_HOME;
-      delete process.env.AGENTHUB_HUB;
-
-      try {
-        process.env.AGENTRC_HOME = path.join(tmpDir, 'rc-home');
-        process.env.AGENTRC_HUB = path.join(tmpDir, 'rc-hub');
-
-        expect(getHomeDir()).toBe(path.join(tmpDir, 'rc-home'));
-        expect(getHubDir()).toBe(path.join(tmpDir, 'rc-hub'));
-      } finally {
-        if (origHubHome !== undefined) process.env.AGENTHUB_HOME = origHubHome;
-        if (origHubHub !== undefined) process.env.AGENTHUB_HUB = origHubHub;
-        if (origRcHome !== undefined) process.env.AGENTRC_HOME = origRcHome;
-        else delete process.env.AGENTRC_HOME;
-        if (origRcHub !== undefined) process.env.AGENTRC_HUB = origRcHub;
-        else delete process.env.AGENTRC_HUB;
-      }
-    });
-
     it('defaults to os.homedir() and .agenthub when no overrides or env vars are set', () => {
       setCustomHome(null, null);
       const origHubHome = process.env.AGENTHUB_HOME;
       const origHubHub = process.env.AGENTHUB_HUB;
-      const origRcHome = process.env.AGENTRC_HOME;
-      const origRcHub = process.env.AGENTRC_HUB;
 
       delete process.env.AGENTHUB_HOME;
       delete process.env.AGENTHUB_HUB;
-      delete process.env.AGENTRC_HOME;
-      delete process.env.AGENTRC_HUB;
 
       try {
         expect(getHomeDir()).toBe(os.homedir());
@@ -102,8 +72,6 @@ describe('detector', () => {
       } finally {
         if (origHubHome !== undefined) process.env.AGENTHUB_HOME = origHubHome;
         if (origHubHub !== undefined) process.env.AGENTHUB_HUB = origHubHub;
-        if (origRcHome !== undefined) process.env.AGENTRC_HOME = origRcHome;
-        if (origRcHub !== undefined) process.env.AGENTRC_HUB = origRcHub;
       }
     });
   });
@@ -133,12 +101,6 @@ describe('detector', () => {
       expect(res.hub.manifest_exists).toBe(true);
       expect(res.hub.rules_count).toBe(2);
       expect(res.hub.skills_count).toBe(2);
-    });
-
-    it('detects agentrc.json as alternative manifest in hub', () => {
-      safeWriteFile(path.join(hubDir, 'agentrc.json'), JSON.stringify({ version: '0.1.0' }));
-      const res = detectPlatforms();
-      expect(res.hub.manifest_exists).toBe(true);
     });
 
     it('detects Antigravity platform configurations', () => {

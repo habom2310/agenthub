@@ -194,11 +194,11 @@ export function initHub(options?: ScaffoldOptions): ScaffoldResult {
     migratedFrom = sourceHub;
 
     const oldManifestAgenthub = path.join(sourceHub, 'agenthub.json');
-    const oldManifestAgentrc = path.join(sourceHub, 'agentrc.json');
+
     const sourceManifest = isFile(oldManifestAgenthub)
       ? oldManifestAgenthub
-      : isFile(oldManifestAgentrc)
-      ? oldManifestAgentrc
+
+
       : null;
 
     if (sourceManifest) {

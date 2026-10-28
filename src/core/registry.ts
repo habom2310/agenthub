@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getEffectiveManifest } from './manifest.js';
-import { findMcpConfigFile, parseMcpServers } from './security.js';
+import { analyzePackage, findMcpConfigFile, parseMcpServers } from './security.js';
 import { extractRepoShorthand } from './share.js';
-import { auditTokenBudget } from './token-budget.js';
+import { auditTokenBudget, estimateTokens } from './token-budget.js';
+import { parseFrontmatter } from './projector.js';
 
 export const DEFAULT_REGISTRY_URL = 'https://agenthub.dev';
 
@@ -286,8 +287,63 @@ export function buildPackagePayload(
     }
   }
 
+  // Scan rules/ to construct rulesAst
+  const rulesAst: Array<{ title: string; file: string; tokens: number; content: string }> = [];
+  const rulesDir = path.join(hubDir, 'rules');
+  if (fs.existsSync(rulesDir) && fs.statSync(rulesDir).isDirectory()) {
+    const walkRules = (dir: string): void => {
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (entry.name.startsWith('.')) continue;
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walkRules(fullPath);
+        } else if (entry.isFile() && entry.name.endsWith('.md')) {
+          try {
+            const content = fs.readFileSync(fullPath, 'utf-8');
+            const relFile = path.relative(hubDir, fullPath).replace(/\\/g, '/');
+            const { meta, body } = parseFrontmatter(content);
+
+            let title = '';
+            if (meta.title && typeof meta.title === 'string' && meta.title.trim()) {
+              title = meta.title.trim();
+            } else if (meta.name && typeof meta.name === 'string' && meta.name.trim()) {
+              title = meta.name.trim();
+            } else {
+              const headingMatch = body.match(/^#\s+(.+)$/m);
+              if (headingMatch && headingMatch[1].trim()) {
+                title = headingMatch[1].trim();
+              } else {
+                title = path.basename(fullPath);
+              }
+            }
+
+            const tokens = estimateTokens(content);
+            rulesAst.push({
+              title,
+              file: relFile,
+              tokens,
+              content,
+            });
+          } catch {}
+        }
+      }
+    };
+    walkRules(rulesDir);
+    rulesAst.sort((a, b) => a.file.localeCompare(b.file));
+  }
+
+  // Security analysis
+  const analysis = analyzePackage(hubDir, manifest.name || repo);
+
   // Calculate token footprint
   const budget = auditTokenBudget(hubDir);
+  const rulesTokens = rulesAst.reduce((acc, r) => acc + r.tokens, 0);
 
   return {
     owner,
@@ -305,6 +361,9 @@ export function buildPackagePayload(
     skills,
     mcpServers,
     readme,
-    tokenFootprint: budget.total_boot_tokens || 0,
+    tokenFootprint: Math.max(budget.total_boot_tokens || 0, rulesTokens),
+    rulesAst,
+    securityRisk: analysis.riskLevel.toLowerCase(),
+    isClean: analysis.isClean,
   };
 }

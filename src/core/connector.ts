@@ -21,7 +21,7 @@ export interface ConnectResult {
 }
 
 /**
- * Updates the hub manifest (agenthub.json or agentrc.json) with platform metadata.
+ * Updates the hub manifest (agenthub.json) with platform metadata.
  */
 export function updateHubManifest(
   platformName: string,
@@ -30,13 +30,13 @@ export function updateHubManifest(
 ): void {
   const hub = hubDir || getHubDir();
   const hubJson = path.join(hub, 'agenthub.json');
-  const rcJson = path.join(hub, 'agentrc.json');
+
 
   let manifestFile: string | null = null;
   if (fs.existsSync(hubJson)) {
     manifestFile = hubJson;
-  } else if (fs.existsSync(rcJson)) {
-    manifestFile = rcJson;
+
+
   }
 
   if (!manifestFile) {
@@ -126,7 +126,7 @@ export function connectCursor(
       enabled: true,
       connected_at: new Date().toISOString(),
       path: cursor_dir,
-      rules_file: path.join(cursor_dir, 'rules', 'agentrc.mdc'),
+      rules_file: path.join(cursor_dir, 'rules', 'agenthub.mdc'),
     },
     hub
   );

@@ -137,13 +137,13 @@ describe('linker', () => {
       expect(parsed.entries[0].path.includes('\\')).toBe(false);
     });
 
-    it('updates existing .agenthub, .agentrc, or .claude entry in place', () => {
+    it('updates existing .agenthub or .claude entry in place', () => {
       const skillsJsonPath = path.join(homeDir, '.gemini', 'config', 'skills.json');
       safeWriteFile(
         skillsJsonPath,
         JSON.stringify({
           entries: [
-            { path: '/old/path/.agentrc/skills' },
+            { path: '/old/path/.agenthub/skills' },
             { name: 'other-tool', path: '/opt/other' },
           ],
         })

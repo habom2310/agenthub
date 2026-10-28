@@ -66,7 +66,7 @@ export function setCustomHome(homePath?: string | null, hubPath?: string | null)
 
 /**
  * Resolves the user's home directory.
- * Priority: override > AGENTHUB_HOME > AGENTRC_HOME > os.homedir()
+ * Priority: override > AGENTHUB_HOME > os.homedir()
  */
 export function getHomeDir(): string {
   if (homeOverride) {
@@ -76,16 +76,12 @@ export function getHomeDir(): string {
   if (envHub) {
     return envHub;
   }
-  const envRc = process.env.AGENTRC_HOME;
-  if (envRc) {
-    return envRc;
-  }
   return os.homedir();
 }
 
 /**
  * Resolves the hub directory path.
- * Priority: override > AGENTHUB_HUB > AGENTRC_HUB > ${getHomeDir()}/.agenthub
+ * Priority: override > AGENTHUB_HUB > ${getHomeDir()}/.agenthub
  */
 export function getHubDir(): string {
   if (hubOverride) {
@@ -94,10 +90,6 @@ export function getHubDir(): string {
   const envHub = process.env.AGENTHUB_HUB;
   if (envHub) {
     return envHub;
-  }
-  const envRc = process.env.AGENTRC_HUB;
-  if (envRc) {
-    return envRc;
   }
   return path.join(getHomeDir(), '.agenthub');
 }
@@ -143,8 +135,7 @@ export function detectPlatforms(): PlatformReport {
   const home = getHomeDir();
   const hub = getHubDir();
 
-  const manifestExists =
-    isFile(path.join(hub, 'agenthub.json')) || isFile(path.join(hub, 'agentrc.json'));
+  const manifestExists = isFile(path.join(hub, 'agenthub.json'));
 
   const report: PlatformReport = {
     hub: {
@@ -174,9 +165,7 @@ export function detectPlatforms(): PlatformReport {
         const p = String(entry?.path || '');
         if (
           p.includes('.agenthub') ||
-          p.includes('agenthub') ||
-          p.includes('.agentrc') ||
-          p.includes('agentrc')
+          p.includes('agenthub')
         ) {
           skillsMappedToHub = true;
           break;
@@ -256,7 +245,6 @@ export function detectPlatforms(): PlatformReport {
   const cursorDir = path.join(home, '.cursor');
   const cursorSkills = path.join(cursorDir, 'skills');
   const cursorRulesMdcHub = path.join(cursorDir, 'rules', 'agenthub.mdc');
-  const cursorRulesMdcRc = path.join(cursorDir, 'rules', 'agentrc.mdc');
   const cursorRulesLegacy = path.join(home, '.cursorrules');
 
   const cursorSkillsLinked = isDir(cursorSkills) && isJunctionOrSymlink(cursorSkills);
@@ -265,7 +253,7 @@ export function detectPlatforms(): PlatformReport {
     name: 'Cursor',
     detected: isDir(cursorDir),
     path: cursorDir,
-    rules_exists: isFile(cursorRulesMdcHub) || isFile(cursorRulesMdcRc) || isFile(cursorRulesLegacy),
+    rules_exists: isFile(cursorRulesMdcHub) || isFile(cursorRulesLegacy),
     skills_linked: cursorSkillsLinked,
   };
 

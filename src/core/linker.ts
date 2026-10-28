@@ -119,8 +119,8 @@ export function linkSkillsForGemini(
       p === hubSkillsPosix ||
       p.includes('.agenthub') ||
       p.includes('agenthub') ||
-      p.includes('.agentrc') ||
-      p.includes('agentrc') ||
+
+
       p.includes('.claude')
     ) {
       if (typeof entry === 'object' && entry !== null) {

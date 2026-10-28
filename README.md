@@ -57,9 +57,9 @@ Create the central `~/.agenthub` directory structure with starter engineering he
 agenthub init
 ```
 
-*Migrating from legacy `~/.agentrc`?* Run migration mode to preserve your custom rules and skills:
+*Migrating from an existing directory?* Run migration mode to preserve your custom rules and skills:
 ```bash
-agenthub init --migrate ~/.agentrc
+agenthub init --migrate <path>
 ```
 
 ### 2. Verify System Health
@@ -108,7 +108,7 @@ Your configuration lives in a central hub (`~/.agenthub` or `$AGENTHUB_HOME`):
 
 ### 1. Rules Projection & Drift Management
 
-Compile universal rules from `~/.agenthub/rules/` into host-native rule files (`GEMINI.md`, `CLAUDE.md`, `AGENTS.md`, `agentrc.mdc`, `global_rules.md`):
+Compile universal rules from `~/.agenthub/rules/` into host-native rule files (`GEMINI.md`, `CLAUDE.md`, `AGENTS.md`, `agenthub.mdc`, `global_rules.md`):
 
 ```bash
 # Project rules and subagent templates to all installed platforms
@@ -189,7 +189,7 @@ agenthub export cursor
 
 ### 7. Rollback & Uninstallation
 
-Revert all assistant rule projections and directory junctions to their original pre-agenthub state (including re-linking `~/.agentrc/skills` if migrated from `agentrc`):
+Revert all assistant rule projections and directory junctions to their original pre-agenthub state:
 
 ```bash
 # Preview rollback actions without touching the filesystem
@@ -213,7 +213,7 @@ npm uninstall -g @habom2310/agenthub
 
 | Command | Description |
 |---|---|
-| `agenthub init [--migrate <path>]` | Initialize `~/.agenthub` directory structure or migrate from `~/.agentrc` |
+| `agenthub init [--migrate <path>]` | Initialize `~/.agenthub` directory structure or migrate from an existing directory |
 | `agenthub detect` | Detect installed AI coding assistants and status |
 | `agenthub doctor [--fix]` | Diagnose configuration issues and auto-repair broken junctions/rules |
 | `agenthub project` | Compile and project unified rules and subagents to configured platforms |
@@ -235,7 +235,8 @@ npm uninstall -g @habom2310/agenthub
 
 ## Environment Variables
 
-- `AGENTHUB_HOME` (or `AGENTRC_HOME`): Override the default hub directory (default: `~/.agenthub`).
+- `AGENTHUB_HOME`: Override the default user home directory.
+- `AGENTHUB_HUB`: Override the default hub directory (default: `~/.agenthub`).
 
 ---
 

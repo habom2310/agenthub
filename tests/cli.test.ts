@@ -261,7 +261,7 @@ describe('CLI Integration', () => {
 
     const fullLog = stripAnsi(logs.join('\n'));
     expect(fullLog).toContain('Connected Cursor');
-    expect(fs.existsSync(path.join(sandbox, '.cursor', 'rules', 'agentrc.mdc'))).toBe(true);
+    expect(fs.existsSync(path.join(sandbox, '.cursor', 'rules', 'agenthub.mdc'))).toBe(true);
   });
 
   it('connect rejects --target-dir for unsupported platforms', async () => {

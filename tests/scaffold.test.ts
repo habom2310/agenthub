@@ -130,7 +130,7 @@ describe('scaffold', () => {
     });
 
     it('migrates rules, skills, agents, and mcp from an older hub', () => {
-      const oldHub = path.join(tmpDir, 'old-agentrc');
+      const oldHub = path.join(tmpDir, 'old-hub');
       safeWriteFile(path.join(oldHub, 'rules', 'custom-rule.md'), '# Old Custom Rule');
       safeWriteFile(path.join(oldHub, 'rules', 'overrides', 'agy.md'), '# Old AGY Override');
       safeWriteFile(path.join(oldHub, 'agents', 'specialist.md'), '# Specialist');
@@ -159,14 +159,14 @@ describe('scaffold', () => {
     it('expands tilde and throws error for non-existent migrateFrom path', () => {
       // Test expandTilde helper
       expect(expandTilde('~')).toBe(homeDir);
-      expect(expandTilde('~/.agentrc')).toBe(path.join(homeDir, '.agentrc'));
-      expect(expandTilde('~\\.agentrc')).toBe(path.join(homeDir, '.agentrc'));
+      expect(expandTilde('~/.old-hub')).toBe(path.join(homeDir, '.old-hub'));
+      expect(expandTilde('~\\.old-hub')).toBe(path.join(homeDir, '.old-hub'));
       expect(expandTilde('relative/path')).toBe('relative/path');
 
       // Test non-existent path throws error with expanded path
-      const missingPath = path.resolve(path.join(homeDir, '.non-existent-agentrc'));
+      const missingPath = path.resolve(path.join(homeDir, '.non-existent-hub'));
       expect(() => {
-        initHub({ migrateFrom: '~/.non-existent-agentrc' });
+        initHub({ migrateFrom: '~/.non-existent-hub' });
       }).toThrow(`Migration source directory does not exist: ${missingPath}`);
 
       // Test file instead of directory throws error
@@ -203,8 +203,8 @@ describe('scaffold', () => {
       expect(result.copiedTemplates).not.toContain('mcp/servers.json');
     });
 
-    it('preserves manifest platform settings from agentrc.json on migration', () => {
-      const oldHub = path.join(tmpDir, 'old-agentrc-manifest');
+    it('preserves manifest platform settings from agenthub.json on migration', () => {
+      const oldHub = path.join(tmpDir, 'old-hub-manifest');
       const oldManifest = {
         platforms: {
           cursor: { enabled: true },
@@ -212,7 +212,7 @@ describe('scaffold', () => {
           claude: { enabled: false },
         },
       };
-      safeWriteFile(path.join(oldHub, 'agentrc.json'), JSON.stringify(oldManifest, null, 2));
+      safeWriteFile(path.join(oldHub, 'agenthub.json'), JSON.stringify(oldManifest, null, 2));
 
       initHub({ migrateFrom: oldHub });
 

@@ -286,6 +286,82 @@ describe('Registry Core Module', () => {
         },
       ]);
       expect(payload.readme).toContain('# Super Agent');
+      expect(payload.rulesAst).toEqual([]);
+      expect(payload.securityRisk).toBe('low');
+      expect(payload.isClean).toBe(true);
+    });
+
+    it('scans rules directory and constructs rulesAst with proper titles, paths, tokens', () => {
+      safeWriteFile(
+        path.join(tmpDir, 'agenthub.json'),
+        JSON.stringify({
+          name: 'rules-pkg',
+          version: '1.0.0',
+        })
+      );
+
+      // Root rule with # Title heading
+      safeWriteFile(
+        path.join(tmpDir, 'rules', 'common.md'),
+        '# Core Rules\n\nAlways follow instructions carefully and test thoroughly.'
+      );
+
+      // Addon rule with frontmatter title
+      safeWriteFile(
+        path.join(tmpDir, 'rules', 'addons', 'sample.md'),
+        '---\ntitle: Sample Addon Rule\n---\n\nAddon specific instructions.'
+      );
+
+      // Addon rule with frontmatter name
+      safeWriteFile(
+        path.join(tmpDir, 'rules', 'addons', 'named.md'),
+        '---\nname: Named Rule\n---\n\nNamed rule content.'
+      );
+
+      // Rule with no title or frontmatter (falls back to basename)
+      safeWriteFile(
+        path.join(tmpDir, 'rules', 'overrides', 'plain.md'),
+        'Plain text rule content without headings or frontmatter.'
+      );
+
+      const payload = buildPackagePayload(tmpDir, {
+        repoShorthand: 'alice/rules-pkg',
+      });
+
+      expect(Array.isArray(payload.rulesAst)).toBe(true);
+      const rules = payload.rulesAst as Array<{
+        title: string;
+        file: string;
+        tokens: number;
+        content: string;
+      }>;
+      expect(rules).toHaveLength(4);
+
+      // rules/addons/named.md
+      const namedRule = rules.find((r) => r.file === 'rules/addons/named.md');
+      expect(namedRule).toBeDefined();
+      expect(namedRule?.title).toBe('Named Rule');
+      expect(namedRule?.tokens).toBeGreaterThan(0);
+
+      // rules/addons/sample.md
+      const sampleRule = rules.find((r) => r.file === 'rules/addons/sample.md');
+      expect(sampleRule).toBeDefined();
+      expect(sampleRule?.title).toBe('Sample Addon Rule');
+      expect(sampleRule?.tokens).toBeGreaterThan(0);
+
+      // rules/common.md
+      const commonRule = rules.find((r) => r.file === 'rules/common.md');
+      expect(commonRule).toBeDefined();
+      expect(commonRule?.title).toBe('Core Rules');
+      expect(commonRule?.content).toContain('# Core Rules');
+
+      // rules/overrides/plain.md
+      const plainRule = rules.find((r) => r.file === 'rules/overrides/plain.md');
+      expect(plainRule).toBeDefined();
+      expect(plainRule?.title).toBe('plain.md');
+
+      expect(payload.securityRisk).toBe('low');
+      expect(payload.isClean).toBe(true);
     });
   });
 });

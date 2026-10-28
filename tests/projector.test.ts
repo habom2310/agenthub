@@ -389,7 +389,7 @@ Section after horizontal rule`;
       const res = projectCursorRules(cursorDir, homeDir, hubDir);
       expect(res.success).toBe(true);
 
-      const mdcFile = path.join(cursorDir, 'rules', 'agentrc.mdc');
+      const mdcFile = path.join(cursorDir, 'rules', 'agenthub.mdc');
       const cursorRulesFile = path.join(homeDir, '.cursorrules');
 
       expect(fs.existsSync(mdcFile)).toBe(true);
@@ -417,7 +417,7 @@ Section after horizontal rule`;
       const res = projectCursorRules(undefined, homeDir, hubDir);
       expect(res.success).toBe(true);
 
-      expect(fs.existsSync(path.join(homeDir, '.cursor', 'rules', 'agentrc.mdc'))).toBe(true);
+      expect(fs.existsSync(path.join(homeDir, '.cursor', 'rules', 'agenthub.mdc'))).toBe(true);
     });
   });
 
@@ -691,14 +691,14 @@ You are the writer.`
       expect(exportContent).toContain('# Testing Addon Rules');
     });
 
-    it('projects addon rules to Cursor (.cursor/rules/agentrc.mdc and .cursorrules)', () => {
+    it('projects addon rules to Cursor (.cursor/rules/agenthub.mdc and .cursorrules)', () => {
       const cursorDir = path.join(homeDir, '.cursor');
       ensureDir(cursorDir);
 
       const res = projectCursorRules(cursorDir, homeDir, hubDir);
       expect(res.success).toBe(true);
 
-      const mdcPath = path.join(cursorDir, 'rules', 'agentrc.mdc');
+      const mdcPath = path.join(cursorDir, 'rules', 'agenthub.mdc');
       const mdcContent = fs.readFileSync(mdcPath, 'utf-8');
       expect(mdcContent).toContain('# Security Addon Rules');
       expect(mdcContent).toContain('# Testing Addon Rules');

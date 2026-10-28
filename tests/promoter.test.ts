@@ -247,10 +247,10 @@ describe('promoter', () => {
       const claudeFile = path.join(homeDir, '.claude', 'CLAUDE.md');
       const windowsManifest = [
         HEADER_GUARD,
-        `@C:\\users\\test\\.agentrc\\rules\\common.md`,
-        `@C:\\users\\test\\.agentrc\\rules\\code-tools.md`,
-        `@C:\\users\\test\\.agentrc\\rules\\handoffs.md`,
-        `@C:\\users\\test\\.agentrc\\rules\\overrides\\claude.md`,
+        `@C:\\users\\test\\.agenthub\\rules\\common.md`,
+        `@C:\\users\\test\\.agenthub\\rules\\code-tools.md`,
+        `@C:\\users\\test\\.agenthub\\rules\\handoffs.md`,
+        `@C:\\users\\test\\.agenthub\\rules\\overrides\\claude.md`,
       ].join('\n\n') + '\n';
       safeWriteFile(claudeFile, windowsManifest);
 

@@ -72,22 +72,7 @@ describe('connector', () => {
       expect(data.platforms.cursor).toEqual({ enabled: true, testProp: 123 });
     });
 
-    it('falls back to agentrc.json when agenthub.json is absent', () => {
-      fs.unlinkSync(path.join(hubDir, 'agenthub.json'));
-      safeWriteFile(
-        path.join(hubDir, 'agentrc.json'),
-        JSON.stringify({ version: '0.1.0', platforms: {} }, null, 2)
-      );
-
-      updateHubManifest('windsurf', { enabled: true }, hubDir);
-
-      const data = JSON.parse(
-        fs.readFileSync(path.join(hubDir, 'agentrc.json'), 'utf-8')
-      );
-      expect(data.platforms.windsurf).toEqual({ enabled: true });
-    });
-
-    it('handles gracefully if neither manifest exists', () => {
+    it('handles gracefully if manifest does not exist', () => {
       fs.unlinkSync(path.join(hubDir, 'agenthub.json'));
       expect(() => {
         updateHubManifest('cursor', { enabled: true }, hubDir);
@@ -106,7 +91,7 @@ describe('connector', () => {
       expect(fs.existsSync(cursorSkills)).toBe(true);
       expect(isJunctionOrSymlink(cursorSkills)).toBe(true);
 
-      const mdcFile = path.join(cursorDir, 'rules', 'agentrc.mdc');
+      const mdcFile = path.join(cursorDir, 'rules', 'agenthub.mdc');
       expect(fs.existsSync(mdcFile)).toBe(true);
       const mdcContent = fs.readFileSync(mdcFile, 'utf-8');
       expect(mdcContent).toContain('Global multi-assistant heuristics');
@@ -132,7 +117,7 @@ describe('connector', () => {
       expect(fs.existsSync(cursorSkills)).toBe(true);
       expect(isJunctionOrSymlink(cursorSkills)).toBe(true);
 
-      const mdcFile = path.join(customCursorDir, 'rules', 'agentrc.mdc');
+      const mdcFile = path.join(customCursorDir, 'rules', 'agenthub.mdc');
       expect(fs.existsSync(mdcFile)).toBe(true);
 
       const manifest = JSON.parse(
