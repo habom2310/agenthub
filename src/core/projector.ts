@@ -20,7 +20,7 @@ export const PLATFORM_RULE_FILES: Record<string, string[]> = {
 };
 
 // Agent body text between these markers is projected to Claude Code only.
-const CLAUDE_ONLY_BLOCK = /<!-- claude-only -->\r?\n([\s\S]*?)<!-- \/claude-only -->\r?\n/g;
+const CLAUDE_ONLY_BLOCK = /<!-- claude-only -->\r?\n([\s\S]*?)<!-- \/claude-only -->(?:\r?\n|$)/g;
 
 export interface AgentFrontmatter {
   name?: string;

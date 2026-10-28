@@ -609,6 +609,23 @@ Shared outro.`
       expect(gemini).not.toContain('Claude-only text.');
       expect(gemini).not.toContain('claude-only');
     });
+
+    it('handles a claude-only block that ends the file without a trailing newline', () => {
+      safeWriteFile(
+        path.join(hubDir, 'agents', 'tail.md'),
+        '---\nname: tail\ndescription: Tail agent\n---\n\nShared.\n\n<!-- claude-only -->\nClaude-only text.\n<!-- /claude-only -->'
+      );
+
+      expect(projectSubagents(homeDir, hubDir).success).toBe(true);
+
+      const claude = fs.readFileSync(path.join(homeDir, '.claude', 'agents', 'tail.md'), 'utf-8');
+      expect(claude).toContain('Shared.\n\nClaude-only text.\n');
+      expect(claude).not.toContain('claude-only');
+
+      const gemini = fs.readFileSync(path.join(homeDir, '.gemini', 'config', 'agents', 'tail.md'), 'utf-8');
+      expect(gemini).not.toContain('Claude-only text.');
+      expect(gemini).not.toContain('claude-only');
+    });
   });
 
   describe('projectRules and projectAll', () => {
