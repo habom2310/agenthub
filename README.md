@@ -14,7 +14,7 @@ Supports:
 - **OpenAI Codex CLI & ChatGPT** (`~/.codex`)
 - **Cursor** (`~/.cursor`)
 - **Windsurf** (`~/.codeium/windsurf` / `~/.windsurf`)
-- **GitHub Copilot CLI**
+- **GitHub Copilot CLI** (system `PATH` binary: `copilot`)
 
 ---
 
