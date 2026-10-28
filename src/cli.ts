@@ -36,6 +36,9 @@ import {
   syncMcpServers,
   getMcpStatus,
   uninstallHub,
+  searchRegistry,
+  publishToRegistry,
+  buildPackagePayload,
   type MarkdownChunk,
   type PlatformDriftTarget,
 } from './index.js';
@@ -806,8 +809,10 @@ export function buildCli(): Command {
     .option('-r, --remote <remote>', 'Remote repository name', 'origin')
     .option('-b, --branch <branch>', 'Branch to push')
     .option('-f, --force', 'Force sharing even if security risks or secrets are detected')
+    .option('--publish', 'Publish package to AgentHub registry after pushing')
+    .option('--registry <url>', 'Override registry URL')
     .option('-H, --home <dir>', 'Sets custom home directory')
-    .action((options) => {
+    .action(async (options) => {
       applyHomeOverride(options);
       const res = shareSetup({
         commitMessage: options.message,
@@ -839,9 +844,96 @@ export function buildCli(): Command {
       console.log(pc.bold('\nShare Commands:'));
       console.log(`  ${pc.cyan(res.shareCommand)}`);
       console.log(`  ${pc.cyan(res.profileCommand)}`);
+
+      if (options.publish) {
+        console.log(pc.bold('\nPublishing to registry...'));
+        const hub = getHubDir();
+        const payload = buildPackagePayload(hub, {
+          repoShorthand: res.repoShorthand,
+          remoteUrl: res.remoteUrl,
+        });
+
+        const pubResult = await publishToRegistry(payload, {
+          registryUrl: options.registry,
+        });
+
+        if (pubResult.success) {
+          const pkgId =
+            pubResult.package?.id ||
+            (payload.owner ? `${payload.owner}/${payload.repo}` : (payload.name as string));
+          console.log(pc.green(`✓ Successfully published and indexed "${pkgId}" in registry!`));
+        } else {
+          console.error(pc.red(`✗ Failed to publish to registry: ${pubResult.error}`));
+          process.exitCode = 1;
+        }
+      }
     });
 
-  // 19. uninstall
+  // 19. search
+  program
+    .command('search [query]')
+    .description('Search the AgentHub registry for profiles and addons')
+    .option('-p, --platform <platform>', 'Filter by platform')
+    .option('-t, --type <type>', 'Filter by type (profile/addon)')
+    .option('--tag <tag>', 'Filter by tag')
+    .option('--registry <url>', 'Override registry URL')
+    .option('-l, --limit <num>', 'Max results to show (default 10)', '10')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action(async (query = '', options) => {
+      applyHomeOverride(options);
+      const limit = parseInt(options.limit, 10) || 10;
+      const res = await searchRegistry(query, {
+        platform: options.platform,
+        type: options.type,
+        tag: options.tag,
+        registryUrl: options.registry,
+        limit,
+      });
+
+      if (!res.success) {
+        console.error(pc.red(`✗ Failed to search registry: ${res.error}`));
+        process.exitCode = 1;
+        return;
+      }
+
+      if (res.packages.length === 0) {
+        if (query) {
+          console.log(`No packages found matching "${query}".`);
+        } else {
+          console.log('No packages found in registry.');
+        }
+        return;
+      }
+
+      const matchLabel = query ? `matching "${query}"` : 'in registry';
+      console.log(
+        pc.bold(`Found ${res.packages.length} package${res.packages.length === 1 ? '' : 's'} ${matchLabel}:\n`)
+      );
+
+      for (const pkg of res.packages) {
+        const typeBadge = pkg.type === 'profile' ? pc.cyan('[profile]') : pc.magenta('[addon]');
+        const versionStr = pkg.version ? pc.dim(`@${pkg.version}`) : '';
+        console.log(`  ${pc.bold(pkg.id)}${versionStr} ${typeBadge}`);
+        if (pkg.description) {
+          console.log(`  ${pkg.description}`);
+        }
+        const platformsStr =
+          pkg.platforms && pkg.platforms.length > 0 ? pkg.platforms.join(', ') : 'all';
+        const starsStr = `★ ${pkg.stars ?? 0}`;
+        const tokens = pkg.tokenFootprint?.totalTokens ?? 0;
+        const metaParts = [`Platforms: ${platformsStr}`, starsStr];
+        if (tokens > 0) {
+          metaParts.push(`~${tokens} tokens`);
+        }
+        console.log(`  ${pc.dim(metaParts.join(' | '))}`);
+
+        const installCmd =
+          pkg.type === 'profile' ? `agenthub profile use ${pkg.id}` : `agenthub add ${pkg.id}`;
+        console.log(`  Install: ${pc.cyan(installCmd)}\n`);
+      }
+    });
+
+  // 20. uninstall
   program
     .command('uninstall')
     .description('Rollback assistant rules and junctions to original state, and optionally remove hub')

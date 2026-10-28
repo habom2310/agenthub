@@ -212,4 +212,18 @@ export {
   type UninstallResult,
 } from './core/uninstaller.js';
 
+// Core Registry
+export {
+  DEFAULT_REGISTRY_URL,
+  getDefaultRegistryUrl,
+  searchRegistry,
+  publishToRegistry,
+  buildPackagePayload,
+  type RegistryPackageSummary,
+  type SearchRegistryOptions,
+  type SearchRegistryResult,
+  type PublishToRegistryOptions,
+  type PublishToRegistryResult,
+} from './core/registry.js';
+
 

@@ -655,4 +655,134 @@ describe('CLI Integration', () => {
     expect(output).toContain('Purged hub directory');
     expect(fs.existsSync(path.join(sandbox, '.agenthub'))).toBe(false);
   });
+
+  it('search displays formatted package list with install commands', async () => {
+    const origFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          total: 2,
+          packages: [
+            {
+              id: 'alice/nextjs-agent',
+              name: 'nextjs-agent',
+              version: '1.0.0',
+              description: 'Next.js agent profile with Prisma and Tailwind',
+              type: 'profile',
+              platforms: ['gemini', 'claude'],
+              stars: 42,
+              tokenFootprint: { totalTokens: 850, rulesTokens: 850, skillsTokens: 0 },
+            },
+            {
+              id: 'bob/tailwind-addon',
+              name: 'tailwind-addon',
+              version: '0.2.0',
+              description: 'Tailwind styling addon',
+              type: 'addon',
+              platforms: ['claude', 'cursor'],
+              stars: 15,
+              tokenFootprint: { totalTokens: 120, rulesTokens: 120, skillsTokens: 0 },
+            },
+          ],
+        }),
+      } as Response);
+
+      logs = [];
+      await runCli(['search', 'react', '-p', 'claude']);
+      const output = stripAnsi(logs.join('\n'));
+
+      expect(output).toContain('Found 2 packages matching "react":');
+      expect(output).toContain('alice/nextjs-agent@1.0.0 [profile]');
+      expect(output).toContain('Next.js agent profile with Prisma and Tailwind');
+      expect(output).toContain('Platforms: gemini, claude | ★ 42 | ~850 tokens');
+      expect(output).toContain('Install: agenthub profile use alice/nextjs-agent');
+
+      expect(output).toContain('bob/tailwind-addon@0.2.0 [addon]');
+      expect(output).toContain('Tailwind styling addon');
+      expect(output).toContain('Platforms: claude, cursor | ★ 15 | ~120 tokens');
+      expect(output).toContain('Install: agenthub add bob/tailwind-addon');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('search prints friendly message when no packages are found', async () => {
+    const origFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ total: 0, packages: [] }),
+      } as Response);
+
+      logs = [];
+      await runCli(['search', 'nonexistent-package']);
+      const output = stripAnsi(logs.join('\n'));
+
+      expect(output).toContain('No packages found matching "nonexistent-package".');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('search prints error message and sets exitCode when registry fails', async () => {
+    const origFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+        text: async () => JSON.stringify({ error: 'Registry undergoing maintenance' }),
+      } as Response);
+
+      errors = [];
+      await runCli(['search', 'react']);
+      const errOutput = stripAnsi(errors.join('\n'));
+
+      expect(errOutput).toContain('Failed to search registry: Registry undergoing maintenance');
+      expect(process.exitCode).toBe(1);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('share with --publish indexes package in registry', async () => {
+    // 1. Initialize hub
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(['-H', sandbox, 'init'], { from: 'user' });
+
+    // 2. Configure a bare remote
+    const bareRemote = path.join(sandbox, 'publish-remote.git');
+    spawnSync('git', ['init', '--bare', bareRemote]);
+
+    const hubDir = path.join(sandbox, '.agenthub');
+    spawnSync('git', ['init', '-b', 'main'], { cwd: hubDir });
+    spawnSync('git', ['remote', 'add', 'origin', bareRemote], { cwd: hubDir });
+
+    const origFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 201,
+        json: async () => ({
+          message: 'Package indexed successfully',
+          package: { id: 'alice/my-agent' },
+        }),
+      } as Response);
+
+      logs = [];
+      errors = [];
+      await runCli(['-H', sandbox, 'share', '--publish', '-m', 'Publish test']);
+      const output = stripAnsi(logs.join('\n'));
+
+      expect(output).toContain('Ready to share');
+      expect(output).toContain('Publishing to registry...');
+      expect(output).toContain('Successfully published and indexed "alice/my-agent" in registry!');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
 });
