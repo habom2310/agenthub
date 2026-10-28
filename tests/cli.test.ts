@@ -64,6 +64,7 @@ describe('CLI Integration', () => {
 
   it('detect reports hub status and platform presence', async () => {
     // 1. Initialize hub
+    setCustomHome(sandbox);
     initHub({ templateDir: undefined });
     // In sandbox, create dummy .gemini folder to test [FOUND]
     ensureDir(path.join(sandbox, '.gemini'));
@@ -487,7 +488,8 @@ describe('CLI Integration', () => {
   });
 
   it('agenthub add installs package cleanly with -y', async () => {
-    initHub({ force: true, customHome: sandbox });
+    setCustomHome(sandbox);
+    initHub({ force: true });
 
     const pkgDir = path.join(sandbox, 'cli-addon');
     ensureDir(pkgDir);
