@@ -94,6 +94,20 @@ describe('CLI Integration', () => {
     expect(process.exitCode).toBeFalsy();
   });
 
+  it('setup with --scaffold-only skips auto-wiring assistants', async () => {
+    await runCli(['-H', sandbox, 'setup', '--scaffold-only']);
+
+    const hubManifest = path.join(sandbox, '.agenthub', 'agenthub.json');
+    expect(fs.existsSync(hubManifest)).toBe(true);
+    expect(fs.existsSync(path.join(sandbox, '.claude', 'CLAUDE.md'))).toBe(false);
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('✓ agenthub setup completed successfully!');
+    expect(fullLog).toContain('Manifest:');
+    expect(fullLog).not.toContain('Configured / detected platforms:');
+    expect(process.exitCode).toBeFalsy();
+  });
+
   it('setup reports blockers, directs user to resolve and advise doctor --fix, and sets exitCode = 1', async () => {
     const doctor = await import('../src/core/doctor.js');
     const index = await import('../src/index.js');
@@ -112,6 +126,7 @@ describe('CLI Integration', () => {
     await runCli(['-H', sandbox, 'setup']);
 
     const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Hub scaffolded:');
     expect(fullLog).toContain('blocker(s) that could not be automatically repaired:');
     expect(fullLog).toContain('Permission denied: cannot write to .claude/skills');
     expect(fullLog).toContain('Broken path in ~/.gemini/config/skills.json');
