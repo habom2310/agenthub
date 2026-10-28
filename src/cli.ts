@@ -115,24 +115,35 @@ export function buildCli(): Command {
       }
     });
 
-  // 2. init
-  program
-    .command('init')
-    .description('Initialize agenthub directory structure and default templates')
-    .option('-f, --force', 'Force overwrite existing template files')
-    .option('-m, --migrate <path>', 'Migrate existing configuration from path')
-    .option('-t, --templates <dir>', 'Custom templates directory')
-    .option('-H, --home <dir>', 'Sets custom home directory')
-    .action((options) => {
-      applyHomeOverride(options);
-      try {
-        const result = initHub({
-          force: Boolean(options.force),
-          migrateFrom: options.migrate,
-          templateDir: options.templates,
-        });
+  const handleSetupOrInit = (
+    commandName: 'setup' | 'init',
+    options: {
+      force?: boolean;
+      migrate?: string;
+      templates?: string;
+      scaffoldOnly?: boolean;
+      home?: string;
+    }
+  ) => {
+    applyHomeOverride(options);
+    const isSetup = commandName === 'setup';
+    try {
+      const result = initHub({
+        force: Boolean(options.force),
+        migrateFrom: options.migrate,
+        templateDir: options.templates,
+      });
 
-        console.log(pc.green(pc.bold('✓ agenthub initialized successfully!')));
+      if (options.scaffoldOnly) {
+        console.log(
+          pc.green(
+            pc.bold(
+              isSetup
+                ? '✓ agenthub setup completed successfully!'
+                : '✓ agenthub initialized successfully!'
+            )
+          )
+        );
         console.log(`  Manifest: ${result.manifest}`);
 
         if (result.backedUpFiles && result.backedUpFiles.length > 0) {
@@ -148,10 +159,135 @@ export function buildCli(): Command {
             console.log(`  - ${t}`);
           }
         }
-      } catch (err) {
-        console.error(pc.red(`✗ Initialization failed: ${(err as Error).message}`));
-        process.exitCode = 1;
+        return;
       }
+
+      const homeDir = getHomeDir();
+      const hubDir = getHubDir();
+      const doctorRes = runDoctor({ fix: true, homeDir, hubDir });
+
+      if (doctorRes.issues.length > 0) {
+        console.log(
+          pc.red(
+            pc.bold(
+              `✗ ${
+                isSetup ? 'Setup' : 'Initialization'
+              } encountered ${doctorRes.issues.length} blocker(s) that could not be automatically repaired:`
+            )
+          )
+        );
+        for (const issue of doctorRes.issues) {
+          console.log(`  ${pc.red('•')} ${issue}`);
+        }
+        console.log(
+          pc.yellow(
+            '\nPlease resolve the blocker(s) above (e.g. fix file permissions or broken paths).'
+          )
+        );
+        console.log(
+          pc.dim('Once addressed, run ') +
+            pc.cyan('agenthub doctor --fix') +
+            pc.dim(' to verify and complete the repair.')
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      console.log(
+        pc.green(
+          pc.bold(
+            isSetup
+              ? '✓ agenthub setup completed successfully!'
+              : '✓ agenthub initialized successfully!'
+          )
+        )
+      );
+      console.log(`  Manifest: ${result.manifest}`);
+
+      if (result.backedUpFiles && result.backedUpFiles.length > 0) {
+        console.log(pc.bold('Backed up files:'));
+        for (const f of result.backedUpFiles) {
+          console.log(`  - ${f}`);
+        }
+      }
+
+      if (result.copiedTemplates && result.copiedTemplates.length > 0) {
+        console.log(pc.bold('Copied templates:'));
+        for (const t of result.copiedTemplates) {
+          console.log(`  - ${t}`);
+        }
+      }
+
+      console.log(pc.bold('\nConfigured / detected platforms:'));
+      const report = detectPlatforms();
+      const configuredPlatforms: string[] = [];
+      if (report.platforms.antigravity?.detected) {
+        configuredPlatforms.push('Antigravity / Gemini');
+      }
+      if (report.platforms.claude?.detected) {
+        configuredPlatforms.push('Claude Code');
+      }
+      if (report.platforms.codex?.detected) {
+        configuredPlatforms.push('OpenAI Codex');
+      }
+      if (report.platforms.cursor?.detected) {
+        configuredPlatforms.push('Cursor');
+      }
+      if (report.platforms.windsurf?.detected) {
+        configuredPlatforms.push('Windsurf');
+      }
+      if (report.platforms.copilot?.detected) {
+        configuredPlatforms.push('GitHub Copilot (system PATH)');
+      }
+
+      if (configuredPlatforms.length > 0) {
+        for (const name of configuredPlatforms) {
+          console.log(`  ${pc.green('✓')} ${name}`);
+        }
+      } else {
+        console.log(`  ${pc.dim('None detected')}`);
+      }
+
+      console.log(pc.bold('\nHealth checks:'));
+      console.log(
+        `  ${pc.green('✓')} All health checks passed (${doctorRes.passed_checks.length}/${doctorRes.passed_checks.length})`
+      );
+    } catch (err) {
+      console.error(
+        pc.red(
+          `✗ ${isSetup ? 'Setup' : 'Initialization'} failed: ${
+            (err as Error).message
+          }`
+        )
+      );
+      process.exitCode = 1;
+    }
+  };
+
+  // 2. setup
+  program
+    .command('setup')
+    .description('One-command setup: scaffold hub, auto-wire assistants, and configure MCP')
+    .option('-f, --force', 'Force overwrite existing template files')
+    .option('-m, --migrate <path>', 'Migrate existing configuration from path')
+    .option('-t, --templates <dir>', 'Custom templates directory')
+    .option('--scaffold-only', 'Only scaffold ~/.agenthub directory without auto-wiring assistants')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action((options) => {
+      handleSetupOrInit('setup', options);
+    });
+
+  // 3. init
+  program
+    .command('init')
+    .description('Initialize agenthub directory structure and auto-wire assistants (or --scaffold-only)')
+    .option('-f, --force', 'Force overwrite existing template files')
+    .option('-m, --migrate <path>', 'Migrate existing configuration from path')
+    .option('-t, --templates <dir>', 'Custom templates directory')
+    .option('--scaffold-only', 'Only scaffold ~/.agenthub directory without auto-wiring assistants')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action((options) => {
+      handleSetupOrInit('init', options);
     });
 
   // 3. link

@@ -23,7 +23,7 @@ Supports:
 ### Option 1: Instant Run with `npx` (No Install Required)
 You can run any command on demand without installing:
 ```bash
-npx @habom2310/agenthub <command>
+npx @habom2310/agenthub setup
 ```
 
 ### Option 2: Global Installation (Recommended)
@@ -43,48 +43,57 @@ yarn global add @habom2310/agenthub
 Verify your installation:
 ```bash
 agenthub --version
-agenthub doctor
 ```
 
 ---
 
-## Quickstart
+## Quickstart (Single-Command Setup)
 
-### 1. Initialize Your Hub
-Create the central `~/.agenthub` directory structure with starter engineering heuristics, subagents, and template configurations:
+Set up your entire agent environment with one command:
 
 ```bash
-agenthub init
+npm install -g @habom2310/agenthub
+agenthub setup
 ```
 
-*Migrating from an existing directory?* Run migration mode to preserve your custom rules and skills:
-```bash
-agenthub init --migrate <path>
-```
+*(You can also use `npx @habom2310/agenthub setup` or `agenthub init` — both run the full automated setup by default).*
 
-### 2. Verify System Health
-Run diagnostic checks on your environment, directory junctions, and assistant configurations:
+### What `agenthub setup` Does Automatically:
+1. **Scaffolds** the central `~/.agenthub` directory with starter heuristics, templates, and subagents (while creating a safe timestamped backup of any pre-existing configurations).
+2. **Auto-wires all detected assistants**: creates directory junctions for shared skills (`~/.claude/skills`, `~/.gemini/config/skills.json`, `.codex/skills`, etc.), compiles and projects unified markdown rules (`GEMINI.md`, `CLAUDE.md`, `AGENTS.md`, Cursor MDC rules), and synchronizes MCP server definitions.
+3. **Validates system health**: verifies all junctions, rule files, and MCP configs.
 
-```bash
-agenthub doctor
-```
+### Handling Blockers:
+`agenthub setup` configures everything autonomously and only halts if it encounters an unresolvable blocker (such as an OS file permission error or broken paths). If a blocker is detected:
+- The command outputs the exact blocker details.
+- It directs you to resolve the blocker (e.g. granting directory permissions or repairing paths).
+- Once addressed, simply run:
+  ```bash
+  agenthub doctor --fix
+  ```
+  to verify and complete the repair.
 
-If any broken junctions, missing platform files, or invalid links are detected, auto-heal them:
-```bash
-agenthub doctor --fix
-```
+*(Need only the directory scaffold without auto-wiring assistants? Pass `--scaffold-only`: `agenthub init --scaffold-only`).*
 
-### 3. Check Detected Platforms
-Inspect which AI coding assistants are installed and active on your machine:
-```bash
-agenthub detect
+---
+
+## 🤖 Let AI Set It Up For You
+
+Prefer your AI assistant to handle setup and configuration? Copy and paste this prompt into your assistant of choice (**Claude Code**, **Google Antigravity / AGY**, **OpenAI Codex CLI**, or **Cursor**):
+
+```text
+Please set up AgentHub on my system:
+1. Install `@habom2310/agenthub` globally if not already installed (`npm install -g @habom2310/agenthub`).
+2. Run `agenthub setup` to initialize the hub, link skills, and project rules to all installed AI assistants.
+3. If any blockers are reported, inspect the output and resolve them or run `agenthub doctor --fix`.
+4. Run `agenthub doctor` to confirm that all checks pass.
 ```
 
 ---
 
 ## Hub Directory Architecture
 
-Your configuration lives in a central hub (`~/.agenthub` or `$AGENTHUB_HOME`):
+Your configuration lives in a central hub (`~/.agenthub` or `$AGENTHUB_HUB`):
 
 ```text
 ~/.agenthub/
@@ -149,7 +158,53 @@ agenthub connect claude
 agenthub connect agy
 ```
 
-### 4. Boot Token Budget Auditor
+### 4. Package Registry & Discovery
+
+Discover, inspect, and install community rules, skills, and presets from the AgentHub registry:
+
+```bash
+# Search registry for packages, skills, or rules
+agenthub search react -p claude
+
+# Inspect a package's security risk, token footprint, MCP servers, and scripts before installing
+agenthub info <target>
+
+# Install an agent package, profile, or addon into the hub (with security prompts)
+agenthub add <target>
+
+# Install rules only, or select specific skills
+agenthub add <target> --rules-only
+agenthub add <target> --skill web-search,git-helper
+```
+
+### 5. Environment Profiles
+
+Manage isolated configuration profiles for different projects, environments, or roles:
+
+```bash
+# List all profiles (* marks active profile)
+agenthub profile list
+
+# Create a new profile
+agenthub profile create work
+
+# Switch active profile
+agenthub profile use work
+```
+
+### 6. Sharing & Publishing
+
+Share your configuration across machines or publish packages to the AgentHub registry:
+
+```bash
+# Push hub config to remote Git repository and generate share command
+agenthub share -m "Update team engineering rules"
+
+# Push and publish package to the AgentHub registry
+agenthub share --publish
+```
+
+### 7. Boot Token Budget Auditor
 
 Measure the minimal context footprint of your core rules and skill descriptions against the recommended 2,000-token boot target:
 
@@ -157,7 +212,7 @@ Measure the minimal context footprint of your core rules and skill descriptions 
 agenthub budget
 ```
 
-### 5. Multi-Machine Sync (Git Federation)
+### 8. Multi-Machine Sync (Git Federation)
 
 Version control and synchronize your dotfiles across multiple machines:
 
@@ -172,7 +227,7 @@ agenthub push -m "Add new coding rules and MCP servers"
 agenthub pull
 ```
 
-### 6. Export Rules for Web Assistants
+### 9. Export Rules for Web Assistants
 
 Generate concatenated prompt blocks ready to paste into web assistants:
 
@@ -187,7 +242,7 @@ agenthub export claude-web
 agenthub export cursor
 ```
 
-### 7. Rollback & Uninstallation
+### 10. Rollback & Uninstallation
 
 Revert all assistant rule projections and directory junctions to their original pre-agenthub state:
 
@@ -213,20 +268,24 @@ npm uninstall -g @habom2310/agenthub
 
 | Command | Description |
 |---|---|
-| `agenthub init [--migrate <path>]` | Initialize `~/.agenthub` directory structure or migrate from an existing directory |
-| `agenthub detect` | Detect installed AI coding assistants and status |
+| `agenthub setup` | One-command setup: scaffold hub, auto-wire assistants, and configure MCP |
+| `agenthub init [--migrate <path>] [--scaffold-only]` | Initialize `~/.agenthub` directory structure (runs full setup by default or scaffold-only) |
+| `agenthub detect` | Detect installed AI coding assistants and configuration status |
 | `agenthub doctor [--fix]` | Diagnose configuration issues and auto-repair broken junctions/rules |
-| `agenthub project` | Compile and project unified rules and subagents to configured platforms |
-| `agenthub diff` | Detect drift between hub rules and downstream platforms |
+| `agenthub search [query]` | Search the AgentHub registry for packages, addons, and profiles |
+| `agenthub info <target>` | Inspect package metadata, security analysis, scripts, and token footprint |
+| `agenthub add <target>` | Install an agent package, profile, or addon into the hub |
+| `agenthub profile [list\|create\|use]` | List, create, or switch between isolated configuration profiles |
+| `agenthub share [--publish]` | Audit, push, and publish hub configurations to Git remote or registry |
+| `agenthub project [--no-imports]` | Compile and project unified rules and subagents to configured platforms |
+| `agenthub diff [-p <platform>]` | Detect drift between hub rules and downstream platforms |
 | `agenthub promote [file]` | Promote downstream rule edits back into central hub |
-| `agenthub mcp status` | Display registered MCP servers across assistants |
-| `agenthub mcp sync` | Bidirectionally synchronize MCP server configurations |
+| `agenthub mcp <status\|sync>` | Display or bidirectionally synchronize MCP server configurations |
 | `agenthub link` | Create directory junctions linking `skills/` across all platforms |
 | `agenthub connect <platform>` | Connect an assistant platform by linking skills and projecting rules |
 | `agenthub budget` | Audit rule and skill token usage against boot token budget |
 | `agenthub export <target>` | Export concatenated rules for web assistants (`chatgpt`, `claude-web`, `cursor`) |
-| `agenthub git status` | Display Git repository and remote synchronization status |
-| `agenthub git init --remote-url <url>` | Initialize hub Git repository with remote URL |
+| `agenthub git <status\|init>` | Manage hub Git repository initialization and remote synchronization |
 | `agenthub push [-m <msg>]` | Stage, commit, and push hub configurations to Git remote |
 | `agenthub pull` | Pull updates from Git remote and reproject rules |
 | `agenthub uninstall [--purge] [-y]` | Roll back assistant rules and junctions to original state, and optionally remove hub |
@@ -237,6 +296,7 @@ npm uninstall -g @habom2310/agenthub
 
 - `AGENTHUB_HOME`: Override the default user home directory.
 - `AGENTHUB_HUB`: Override the default hub directory (default: `~/.agenthub`).
+- `AGENTHUB_REGISTRY_URL`: Override the AgentHub package registry URL (default: official registry).
 
 ---
 
