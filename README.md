@@ -20,13 +20,30 @@ Supports:
 
 ## Installation
 
-### Option 1: Instant Run with `npx` (No Install Required)
+### Option 1: Ask Your AI to Install
+Copy this prompt into Claude Code, Codex, Antigravity, Cursor, or any assistant that can run terminal commands:
+
+```text
+Install AgentHub (https://github.com/habom2310/agenthub) for me:
+
+1. Check that Node.js 20 or later is installed (`node -v`). If not, stop and tell me.
+2. Install it globally: `npm install -g @habom2310/agenthub`. Do not use sudo. If the install fails on permissions, stop and tell me.
+3. Verify: `agenthub --version`
+4. Run `agenthub detect` and show me the hub path and which AI assistants it found.
+5. If `detect` reports the hub status as "Not initialized", run `agenthub init`. If it reports "Active", skip init, and do not run `agenthub init --force` or `--migrate` unless I ask.
+6. Run `agenthub doctor` and summarize the result. Right after a fresh init, warnings about missing skills junctions and rules files are expected. They are normal setup, not an install failure.
+7. Before running `agenthub doctor --fix`, ask me. Explain that it links my assistants' skills folders (such as `~/.claude/skills`) to the hub: existing skills are copied into the hub and the original folder is renamed to `skills.old`, replacing any previous `skills.old`.
+
+Finish with a short summary of what was installed and anything I need to do next.
+```
+
+### Option 2: Instant Run with `npx` (No Install Required)
 You can run any command on demand without installing:
 ```bash
 npx @habom2310/agenthub <command>
 ```
 
-### Option 2: Global Installation (Recommended)
+### Option 3: Global Installation (Recommended)
 Install globally to get the standalone `agenthub` executable in your terminal:
 
 ```bash
