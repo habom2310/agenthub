@@ -187,6 +187,26 @@ agenthub export claude-web
 agenthub export cursor
 ```
 
+### 7. Rollback & Uninstallation
+
+Revert all assistant rule projections and directory junctions to their original pre-agenthub state (including re-linking `~/.agentrc/skills` if migrated from `agentrc`):
+
+```bash
+# Preview rollback actions without touching the filesystem
+agenthub uninstall --dry-run
+
+# Interactive rollback with confirmation prompt
+agenthub uninstall
+
+# Full rollback and automatic deletion of ~/.agenthub
+agenthub uninstall --purge -y
+```
+
+After rolling back configurations, remove the CLI itself:
+```bash
+npm uninstall -g @habom2310/agenthub
+```
+
 ---
 
 ## CLI Command Reference
@@ -209,6 +229,7 @@ agenthub export cursor
 | `agenthub git init --remote-url <url>` | Initialize hub Git repository with remote URL |
 | `agenthub push [-m <msg>]` | Stage, commit, and push hub configurations to Git remote |
 | `agenthub pull` | Pull updates from Git remote and reproject rules |
+| `agenthub uninstall [--purge] [-y]` | Roll back assistant rules and junctions to original state, and optionally remove hub |
 
 ---
 

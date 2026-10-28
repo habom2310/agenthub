@@ -125,6 +125,29 @@ A modular security scanner addon for AI agents.
       expect(inferred.description).toBe('A modular security scanner addon for AI agents.');
     });
 
+    it('skips badges, images, dividers, comments, and HTML tags when extracting description', () => {
+      const readme = `# Package Title
+[![Build Status](https://img.shields.io/badge/build-passing-green)](https://example.com)
+[![npm version](https://badge.fury.io/js/pkg.svg)](https://example.com)
+![Banner Image](https://example.com/banner.png)
+<div align="center">
+  <img src="logo.png" alt="logo" width="100" />
+</div>
+---
+<!-- Developer note -->
+<!-- Multi-line
+comment -->
+
+A clean prose description of the agent package.
+
+## Features
+`;
+      safeWriteFile(path.join(tmpDir, 'README.md'), readme);
+
+      const inferred = inferManifest(tmpDir);
+      expect(inferred.description).toBe('A clean prose description of the agent package.');
+    });
+
     it('returns empty string description when README.md is absent or only has headers', () => {
       const inferred1 = inferManifest(tmpDir);
       expect(inferred1.description).toBe('');
@@ -154,6 +177,14 @@ A modular security scanner addon for AI agents.
       expect(inferred.platforms).toEqual(['gemini', 'claude', 'cursor']);
     });
 
+    it('returns DEFAULT_PLATFORMS when rules/common.md exists regardless of overrides', () => {
+      safeWriteFile(path.join(tmpDir, 'rules', 'common.md'), '# Common rules');
+      safeWriteFile(path.join(tmpDir, 'rules', 'overrides', 'claude.md'), '# Claude override');
+
+      const inferred = inferManifest(tmpDir);
+      expect(inferred.platforms).toEqual(DEFAULT_PLATFORMS);
+    });
+
     it('initializes tags to empty array', () => {
       const inferred = inferManifest(tmpDir);
       expect(inferred.tags).toEqual([]);
@@ -180,6 +211,21 @@ A modular security scanner addon for AI agents.
       expect(res.name).toBe('fallback-name');
       expect(res.description).toBe('Inferred description');
       expect(res.type).toBe('addon');
+    });
+
+    it('populates name with fallbackName or folder basename when agenthub.json lacks a name', () => {
+      // Manifest exists but has no name
+      const noName = {
+        description: 'Package without name',
+        type: 'profile',
+      };
+      safeWriteFile(path.join(tmpDir, 'agenthub.json'), JSON.stringify(noName));
+
+      const res1 = getEffectiveManifest(tmpDir, 'provided-fallback');
+      expect(res1.name).toBe('provided-fallback');
+
+      const res2 = getEffectiveManifest(tmpDir);
+      expect(res2.name).toBe(path.basename(tmpDir));
     });
   });
 

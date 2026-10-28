@@ -102,7 +102,7 @@ export function getAddonRuleFiles(hubDir: string): string[] {
     }
     return fs
       .readdirSync(addonsDir)
-      .filter((f) => f.endsWith('.md') && !f.startsWith('.'))
+      .filter((f) => f.endsWith('.md') && !f.startsWith('.') && fs.statSync(path.join(addonsDir, f)).isFile())
       .sort()
       .map((f) => path.posix.join('addons', f));
   } catch {

@@ -624,9 +624,10 @@ You are the writer.`
       // Non-markdown or hidden file should be ignored
       safeWriteFile(path.join(hubDir, 'rules', 'addons', '.hidden.md'), '# Hidden');
       safeWriteFile(path.join(hubDir, 'rules', 'addons', 'notes.txt'), 'Not markdown');
+      fs.mkdirSync(path.join(hubDir, 'rules', 'addons', 'subfolder.md'));
     });
 
-    it('getAddonRuleFiles returns sorted relative paths and ignores non-markdown/hidden files', () => {
+    it('getAddonRuleFiles returns sorted relative paths and ignores non-markdown/hidden files and directories', () => {
       const files = getAddonRuleFiles(hubDir);
       expect(files).toEqual(['addons/security.md', 'addons/testing.md']);
     });

@@ -84,6 +84,8 @@ export {
   linkSkillsForGemini,
   linkSkillsForCodex,
   projectCodexSkillManifests,
+  linkSkillsForAllAssistants,
+  type LinkAllSkillsResult,
   type LinkResult,
 } from './core/linker.js';
 
@@ -158,3 +160,56 @@ export {
   writeManifest,
   type AgentPackageManifest,
 } from './core/manifest.js';
+
+// Core Security
+export {
+  analyzePackage,
+  findMcpConfigFile,
+  parseMcpServers,
+  type McpServerAnalysis,
+  type ScriptAnalysis,
+  type PackageAnalysisReport,
+} from './core/security.js';
+
+
+// Core Distribution Engine
+export {
+  resolvePackageTarget,
+  packageInfo,
+  packageAdd,
+  sanitizeIdentifier,
+  type AddPackageOptions,
+  type AddPackageResult,
+} from './core/distribution.js';
+
+// Core Profile Manager
+export {
+  profileList,
+  profileCreate,
+  profileUse,
+  type ProfileListResult,
+  type ProfileCreateResult,
+  type ProfileUseOptions,
+  type ProfileUseResult,
+} from './core/profile.js';
+
+// Core Share Publisher
+export {
+  shareSetup,
+  extractRepoShorthand,
+  type ShareOptions,
+  type ShareResult,
+} from './core/share.js';
+
+// Core Uninstaller
+export {
+  findEarliestBackup,
+  restoreFromBackup,
+  cleanupJunctions,
+  cleanupGeneratedRules,
+  uninstallHub,
+  type UninstallOptions,
+  type UninstallResult,
+} from './core/uninstaller.js';
+
+

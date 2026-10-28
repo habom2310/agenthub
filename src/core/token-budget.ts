@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getHubDir } from './detector.js';
-import { parseFrontmatter } from './projector.js';
+import { getAddonRuleFiles, parseFrontmatter } from './projector.js';
 
 export interface BudgetAuditResult {
   core_rules_tokens: number;
-  addons_rules_tokens?: number;
+  addons_rules_tokens: number;
   skills_count: number;
   skills_registry_tokens: number;
   total_boot_tokens: number;
@@ -45,22 +45,16 @@ export function auditTokenBudget(hubDir?: string): BudgetAuditResult {
   const core_rules_tokens = estimateTokens(coreChars);
 
   // Addon rules tokens
-  let addons_rules_tokens = 0;
-  const addonsDir = path.join(hub, 'rules', 'addons');
-  if (fs.existsSync(addonsDir) && fs.statSync(addonsDir).isDirectory()) {
-    let addonsChars = 0;
-    const addonFiles = fs
-      .readdirSync(addonsDir)
-      .filter((f) => f.endsWith('.md') && !f.startsWith('.'));
-    for (const f of addonFiles) {
-      const fullPath = path.join(addonsDir, f);
-      if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
-        const text = fs.readFileSync(fullPath, 'utf-8');
-        addonsChars += text.trim().length;
-      }
+  let addonsChars = 0;
+  const addonFiles = getAddonRuleFiles(hub);
+  for (const f of addonFiles) {
+    const fullPath = path.join(hub, 'rules', f);
+    if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+      const text = fs.readFileSync(fullPath, 'utf-8');
+      addonsChars += text.trim().length;
     }
-    addons_rules_tokens = estimateTokens(addonsChars);
   }
+  const addons_rules_tokens = estimateTokens(addonsChars);
 
   // Skills registry tokens
   const skillsDir = path.join(hub, 'skills');

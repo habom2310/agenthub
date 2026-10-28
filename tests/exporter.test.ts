@@ -109,6 +109,17 @@ describe('exporter', () => {
       expect(res.ok).toBe(true);
       expect(res.content).toContain('ChatGPT Custom Instructions');
     });
+
+    it('includes addon rules in export output when addons are installed', () => {
+      safeWriteFile(
+        path.join(hubDir, 'rules', 'addons', 'security.md'),
+        '# Security Addon\nSecurity rules content.'
+      );
+
+      const res = exportRules('chatgpt', { stdout: true, hubDir });
+      expect(res.ok).toBe(true);
+      expect(res.content).toContain('Security rules content.');
+    });
   });
 
   describe('export options', () => {

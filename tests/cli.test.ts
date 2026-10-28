@@ -165,6 +165,20 @@ describe('CLI Integration', () => {
     expect(fullLog).toContain('PASS (LEAN)');
   });
 
+  it('budget displays addon rules tokens when addons are present', async () => {
+    const hubDir = path.join(sandbox, '.agenthub');
+    ensureDir(path.join(hubDir, 'rules'));
+    safeWriteFile(path.join(hubDir, 'rules', 'common.md'), '# Rules\nShort rule text');
+    safeWriteFile(path.join(hubDir, 'rules', 'addons', 'security.md'), '# Security\nAdditional addon rules');
+
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(['-H', sandbox, 'budget'], { from: 'user' });
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Addon rules tokens:');
+  });
+
   it('mcp status and mcp sync report and sync servers', async () => {
     // Create .claude dir so platform is detected as installed
     ensureDir(path.join(sandbox, '.claude'));
@@ -428,5 +442,199 @@ describe('CLI Integration', () => {
     const fullLog = stripAnsi(logs.join('\n'));
     expect(fullLog).toContain('Successfully pulled from origin/main');
     expect(fs.existsSync(path.join(hubDir, 'rules', 'common.md'))).toBe(true);
+  });
+
+  it('agenthub info prints package summary, token footprint, and security assessment', async () => {
+    const pkgDir = path.join(sandbox, 'test-package');
+    ensureDir(pkgDir);
+
+    safeWriteFile(
+      path.join(pkgDir, 'agenthub.json'),
+      JSON.stringify({
+        name: 'test-package',
+        version: '2.1.0',
+        type: 'addon',
+        description: 'A test CLI package',
+        platforms: ['claude', 'gemini'],
+      })
+    );
+    safeWriteFile(path.join(pkgDir, 'rules', 'common.md'), '# Test Rules\nDo not break things.');
+    safeWriteFile(
+      path.join(pkgDir, 'mcp', 'servers.json'),
+      JSON.stringify({
+        mcpServers: {
+          test_cli_server: {
+            command: 'npx',
+            args: ['-y', 'mcp-server'],
+          },
+        },
+      })
+    );
+
+    logs = [];
+    await runCli(['-H', sandbox, 'info', pkgDir]);
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Package: test-package');
+    expect(fullLog).toContain('Version:       2.1.0');
+    expect(fullLog).toContain('Type:          addon');
+    expect(fullLog).toContain('Description:   A test CLI package');
+    expect(fullLog).toContain('Platforms:     claude, gemini');
+    expect(fullLog).toContain('Token Footprint:');
+    expect(fullLog).toContain('Security Assessment:');
+    expect(fullLog).toContain('Risk level:');
+    expect(fullLog).toContain('test_cli_server');
+  });
+
+  it('agenthub add installs package cleanly with -y', async () => {
+    initHub({ force: true, customHome: sandbox });
+
+    const pkgDir = path.join(sandbox, 'cli-addon');
+    ensureDir(pkgDir);
+
+    safeWriteFile(
+      path.join(pkgDir, 'agenthub.json'),
+      JSON.stringify({
+        name: 'cli-addon',
+        version: '1.0.0',
+        type: 'addon',
+      })
+    );
+    safeWriteFile(path.join(pkgDir, 'rules', 'common.md'), '# Addon CLI Rule');
+    safeWriteFile(
+      path.join(pkgDir, 'skills', 'cli-skill', 'SKILL.md'),
+      '---\nname: cli-skill\ndescription: A CLI skill\n---\nSkill content.'
+    );
+    safeWriteFile(
+      path.join(pkgDir, 'mcp', 'servers.json'),
+      JSON.stringify({
+        mcpServers: {
+          cli_server: {
+            command: 'npx',
+            args: ['cli-mcp'],
+          },
+        },
+      })
+    );
+
+    logs = [];
+    await runCli(['-H', sandbox, 'add', pkgDir, '-y']);
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Successfully installed package "cli-addon"');
+    expect(fullLog).toContain('Rules:       Installed to rules/addons/cli-addon.md');
+    expect(fullLog).toContain('Skills:      cli-skill');
+    expect(fullLog).toContain('MCP Servers: cli_server');
+
+    const hubAddonRule = path.join(sandbox, '.agenthub', 'rules', 'addons', 'cli-addon.md');
+    expect(fs.existsSync(hubAddonRule)).toBe(true);
+    expect(fs.existsSync(path.join(sandbox, '.agenthub', 'skills', 'cli-skill'))).toBe(true);
+  });
+
+  it('profile list, create, and use manage profiles via CLI', async () => {
+    // 1. Scaffold hub first
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(['-H', sandbox, 'init'], { from: 'user' });
+
+    // 2. profile list defaults to default profile
+    logs = [];
+    await runCli(['-H', sandbox, 'profile', 'list']);
+    let output = stripAnsi(logs.join('\n'));
+    expect(output).toContain('AgentHub Profiles:');
+    expect(output).toContain('default (active)');
+
+    // 3. profile create <name>
+    logs = [];
+    await runCli(['-H', sandbox, 'profile', 'create', 'work']);
+    output = stripAnsi(logs.join('\n'));
+    expect(output).toContain('Profile "work" created successfully');
+    expect(fs.existsSync(path.join(sandbox, '.agenthub', 'profiles', 'work'))).toBe(true);
+
+    // 4. profile list now lists work
+    logs = [];
+    await runCli(['-H', sandbox, 'profile']);
+    output = stripAnsi(logs.join('\n'));
+    expect(output).toContain('work');
+
+    // 5. profile use <name>
+    logs = [];
+    await runCli(['-H', sandbox, 'profile', 'use', 'work', '-y']);
+    output = stripAnsi(logs.join('\n'));
+    expect(output).toContain('Switched to profile "work"');
+    expect(output).toContain('Active Profile: work');
+  });
+
+  it('share audits and pushes setup via CLI', async () => {
+    // 1. Initialize hub
+    const cli = buildCli();
+    cli.exitOverride();
+    await cli.parseAsync(['-H', sandbox, 'init'], { from: 'user' });
+
+    // 2. Run share without git remote -> reports error
+    errors = [];
+    await runCli(['-H', sandbox, 'share']);
+    let errOutput = stripAnsi(errors.join('\n'));
+    expect(errOutput).toContain('Git remote not configured');
+
+    // 3. Configure a bare remote
+    const bareRemote = path.join(sandbox, 'remote.git');
+    spawnSync('git', ['init', '--bare', bareRemote]);
+
+    const hubDir = path.join(sandbox, '.agenthub');
+    spawnSync('git', ['init', '-b', 'main'], { cwd: hubDir });
+    spawnSync('git', ['remote', 'add', 'origin', bareRemote], { cwd: hubDir });
+
+    logs = [];
+    errors = [];
+    await runCli(['-H', sandbox, 'share', '-m', 'CLI share test']);
+    const output = stripAnsi(logs.join('\n'));
+    expect(output).toContain('Ready to share');
+    expect(output).toContain('Share Commands:');
+    expect(output).toContain(`agenthub add ${bareRemote}`);
+    expect(output).toContain(`agenthub profile use ${bareRemote}`);
+  });
+
+  it('uninstall rolls back assistants and removes generated files', async () => {
+    // 1. Setup pre-existing config before init
+    const claudeDir = path.join(sandbox, '.claude');
+    ensureDir(claudeDir);
+    safeWriteFile(path.join(claudeDir, 'CLAUDE.md'), '# Original Claude Rules');
+
+    // 2. Initialize hub (creates pre-agenthub backup)
+    await runCli(['-H', sandbox, 'init']);
+
+    // 3. Project rules (updates CLAUDE.md to agenthub)
+    await runCli(['-H', sandbox, 'project']);
+    expect(fs.readFileSync(path.join(claudeDir, 'CLAUDE.md'), 'utf-8')).not.toBe('# Original Claude Rules');
+
+    // 4. Run uninstall in dry-run mode
+    logs = [];
+    await runCli(['-H', sandbox, 'uninstall', '--dry-run', '-y']);
+    let output = stripAnsi(logs.join('\n'));
+    expect(output).toContain('dry-run mode');
+    expect(output).toContain('Rollback completed successfully');
+    // Still not reverted because dryRun
+    expect(fs.readFileSync(path.join(claudeDir, 'CLAUDE.md'), 'utf-8')).not.toBe('# Original Claude Rules');
+
+    // 5. Run uninstall with -y (without purge)
+    logs = [];
+    await runCli(['-H', sandbox, 'uninstall', '-y']);
+    output = stripAnsi(logs.join('\n'));
+    expect(output).toContain('Rollback completed successfully');
+    expect(output).toContain('Restored from backup');
+    expect(output).toContain('Hub directory preserved');
+
+    // Verify CLAUDE.md was rolled back to original
+    expect(fs.readFileSync(path.join(claudeDir, 'CLAUDE.md'), 'utf-8')).toBe('# Original Claude Rules');
+    // Hub directory still exists
+    expect(fs.existsSync(path.join(sandbox, '.agenthub'))).toBe(true);
+
+    // 6. Run uninstall with --purge
+    logs = [];
+    await runCli(['-H', sandbox, 'uninstall', '-y', '--purge']);
+    output = stripAnsi(logs.join('\n'));
+    expect(output).toContain('Purged hub directory');
+    expect(fs.existsSync(path.join(sandbox, '.agenthub'))).toBe(false);
   });
 });

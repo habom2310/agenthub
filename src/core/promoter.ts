@@ -12,6 +12,7 @@ import { getHomeDir, getHubDir } from './detector.js';
 import {
   HEADER_GUARD,
   PLATFORM_RULE_FILES,
+  getAddonRuleFiles,
   projectClaudeRules,
   projectCodexRules,
   projectCursorRules,
@@ -52,6 +53,16 @@ export function getExpectedRulesText(platform: string, rulesDir: string): string
   const fileList = PLATFORM_RULE_FILES[platform] || ['common.md', 'code-tools.md', 'handoffs.md'];
   for (const fileName of fileList) {
     const filePath = path.join(rulesDir, fileName);
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      const content = fs.readFileSync(filePath, 'utf-8').trim();
+      if (content) {
+        parts.push(content);
+      }
+    }
+  }
+  const addonFiles = getAddonRuleFiles(path.dirname(rulesDir));
+  for (const addonFile of addonFiles) {
+    const filePath = path.join(rulesDir, addonFile);
     if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
       const content = fs.readFileSync(filePath, 'utf-8').trim();
       if (content) {
@@ -123,7 +134,11 @@ export function detectRuleDrift(homeDir?: string, hubDir?: string): RuleDriftAud
       const existingRuleFiles = PLATFORM_RULE_FILES.claude.filter((f) =>
         fs.existsSync(path.join(rulesDir, f))
       );
-      for (const file of existingRuleFiles) {
+      const addonRuleFiles = getAddonRuleFiles(hub).filter((f) =>
+        fs.existsSync(path.join(rulesDir, f))
+      );
+      const allExpectedFiles = [...existingRuleFiles, ...addonRuleFiles];
+      for (const file of allExpectedFiles) {
         const normFile = file.replace(/\\/g, '/');
         const hasImport = importLines.some((line) => line.includes(normFile));
         if (!hasImport) {

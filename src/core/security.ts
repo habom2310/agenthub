@@ -1,0 +1,575 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { getEffectiveManifest, type AgentPackageManifest } from './manifest.js';
+import { estimateTokens } from './token-budget.js';
+import { parseFrontmatter } from './projector.js';
+
+export interface McpServerAnalysis {
+  name: string;
+  command: string;
+  args: string[];
+  envVars: string[];
+  isSuspicious: boolean;
+  riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+  warnings: string[];
+}
+
+export interface ScriptAnalysis {
+  path: string; // relative to packageDir
+  warnings: string[];
+  riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+}
+
+export interface PackageAnalysisReport {
+  manifest: AgentPackageManifest;
+  riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+  isClean: boolean;
+  mcpServers: McpServerAnalysis[];
+  scripts: ScriptAnalysis[];
+  envVarsRequired: string[];
+  tokenFootprint: {
+    rulesTokens: number;
+    skillsTokens: number;
+    totalTokens: number;
+  };
+  warnings: string[];
+}
+
+const SHELL_INTERPRETERS = new Set([
+  'bash',
+  'sh',
+  'zsh',
+  'cmd',
+  'cmd.exe',
+  'powershell',
+  'powershell.exe',
+  'pwsh',
+  'pwsh.exe',
+  'csh',
+  'tcsh',
+  'fish',
+]);
+
+const REMOTE_DOWNLOAD_COMMANDS = new Set([
+  'curl',
+  'wget',
+  'invoke-webrequest',
+  'iwr',
+]);
+
+const SUSPICIOUS_BINARIES = new Set([
+  'nc',
+  'netcat',
+  'ncat',
+  'socat',
+  'telnet',
+]);
+
+const SCRIPT_RUNNERS = new Set([
+  'node',
+  'python',
+  'python3',
+  'py',
+  'ruby',
+  'perl',
+  'php',
+  'deno',
+  'bun',
+]);
+
+const SAFE_PACKAGE_RUNNERS = new Set([
+  'npx',
+  'uvx',
+  'docker',
+  'podman',
+]);
+
+const SCRIPT_EXTENSIONS = new Set([
+  '.sh',
+  '.bash',
+  '.ps1',
+  '.bat',
+  '.cmd',
+  '.py',
+  '.js',
+  '.ts',
+  '.mjs',
+  '.cjs',
+]);
+
+const IGNORED_DIRS = new Set([
+  'node_modules',
+  '.git',
+  '.codegraph',
+  'dist',
+  'build',
+  '.next',
+]);
+
+export function findMcpConfigFile(packageDir: string): string | null {
+  const candidates = [
+    path.join(packageDir, 'mcp', 'servers.json'),
+    path.join(packageDir, 'servers.json'),
+    path.join(packageDir, 'mcp.json'),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      try {
+        if (fs.statSync(candidate).isFile()) {
+          return candidate;
+        }
+      } catch {
+        // continue
+      }
+    }
+  }
+  return null;
+}
+
+export function parseMcpServers(filePath: string): { servers: Record<string, any>; warnings: string[] } {
+  const warnings: string[] = [];
+  let parsed: any;
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    parsed = JSON.parse(raw);
+  } catch {
+    warnings.push(`Failed to parse MCP configuration in ${path.basename(filePath)}: Invalid JSON`);
+    return { servers: {}, warnings };
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { servers: {}, warnings };
+  }
+
+  if (parsed.mcpServers && typeof parsed.mcpServers === 'object' && !Array.isArray(parsed.mcpServers)) {
+    return { servers: parsed.mcpServers, warnings };
+  }
+
+  const servers: Record<string, any> = {};
+  for (const [key, val] of Object.entries(parsed)) {
+    if (key.startsWith('$')) continue;
+    if (val && typeof val === 'object' && !Array.isArray(val)) {
+      servers[key] = val;
+    }
+  }
+  return { servers, warnings };
+}
+
+function extractEnvVarsFromString(text: string, set: Set<string>): void {
+  for (const match of text.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) {
+    if (match[1]) set.add(match[1]);
+  }
+  for (const match of text.matchAll(/(?:^|[^A-Za-z0-9_])\$([A-Za-z_][A-Za-z0-9_]*)/g)) {
+    if (match[1]) set.add(match[1]);
+  }
+  for (const match of text.matchAll(/%([A-Za-z_][A-Za-z0-9_]*)%/g)) {
+    if (match[1]) set.add(match[1]);
+  }
+}
+
+function extractServerEnvVars(config: any): string[] {
+  const envSet = new Set<string>();
+
+  if (config.env && typeof config.env === 'object' && !Array.isArray(config.env)) {
+    for (const [key, val] of Object.entries(config.env)) {
+      envSet.add(key);
+      if (typeof val === 'string') {
+        extractEnvVarsFromString(val, envSet);
+      }
+    }
+  }
+
+  if (typeof config.command === 'string') {
+    extractEnvVarsFromString(config.command, envSet);
+  }
+
+  if (Array.isArray(config.args)) {
+    for (const arg of config.args) {
+      if (typeof arg === 'string') {
+        extractEnvVarsFromString(arg, envSet);
+      }
+    }
+  }
+
+  return Array.from(envSet).sort();
+}
+
+function analyzeMcpServer(name: string, config: any): McpServerAnalysis {
+  const command = typeof config?.command === 'string' ? config.command : '';
+  const args: string[] = Array.isArray(config?.args)
+    ? config.args.map((a: unknown) => String(a))
+    : [];
+  const envVars = extractServerEnvVars(config || {});
+
+  const cmdBase = path.basename(command).toLowerCase().replace(/\.exe$/, '');
+  let riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' = 'LOW';
+  let isSuspicious = false;
+  const warnings: string[] = [];
+
+  // Shell interpreters
+  if (SHELL_INTERPRETERS.has(cmdBase)) {
+    isSuspicious = true;
+    riskLevel = 'HIGH';
+    warnings.push(`Suspicious shell command: ${command}`);
+    if (args.some((a) => a === '-c' || a === '/c' || a === '-Command')) {
+      warnings.push(`Shell interpreter executes inline code with flag`);
+    }
+  }
+
+  // Remote downloaders
+  if (REMOTE_DOWNLOAD_COMMANDS.has(cmdBase)) {
+    isSuspicious = true;
+    riskLevel = 'HIGH';
+    warnings.push(`Remote download command detected: ${command}`);
+  }
+
+  // Suspicious network utilities
+  if (SUSPICIOUS_BINARIES.has(cmdBase)) {
+    isSuspicious = true;
+    riskLevel = 'HIGH';
+    warnings.push(`Suspicious network utility: ${command}`);
+  }
+
+  // Check command and all args for pipes, redirects, remote downloads, or destructive commands
+  const allParts = [command, ...args];
+  for (const part of allParts) {
+    if (/[|><]/.test(part)) {
+      isSuspicious = true;
+      riskLevel = 'HIGH';
+      warnings.push(`Command contains pipes or redirects: "${part}"`);
+    }
+    if (/\b(?:curl|wget|Invoke-WebRequest|iwr)\b/i.test(part)) {
+      isSuspicious = true;
+      riskLevel = 'HIGH';
+      warnings.push(`Remote download detected in arguments: "${part}"`);
+    }
+    if (
+      /rm\s+-(?:r[a-z]*f|f[a-z]*r)\s+[\/\~]/i.test(part) ||
+      /Remove-Item\s+.*-(?:Recurse|Force)/i.test(part) ||
+      /\bformat\s+[a-zA-Z]:/i.test(part) ||
+      /\bformat\s+\//i.test(part)
+    ) {
+      isSuspicious = true;
+      riskLevel = 'HIGH';
+      warnings.push(`Destructive command detected: "${part}"`);
+    }
+  }
+
+  // If not HIGH, assess script runners vs package runners
+  if (riskLevel !== 'HIGH') {
+    if (SCRIPT_RUNNERS.has(cmdBase)) {
+      riskLevel = 'MEDIUM';
+    } else if (SAFE_PACKAGE_RUNNERS.has(cmdBase)) {
+      riskLevel = 'LOW';
+    } else if (!command) {
+      riskLevel = 'LOW';
+      warnings.push('MCP server has no command specified');
+    } else {
+      riskLevel = 'MEDIUM';
+    }
+  }
+
+  return {
+    name,
+    command,
+    args,
+    envVars,
+    isSuspicious,
+    riskLevel,
+    warnings,
+  };
+}
+
+function collectScriptFiles(packageDir: string): string[] {
+  const scriptPaths: string[] = [];
+
+  function walk(currentDir: string): void {
+    if (!fs.existsSync(currentDir)) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (IGNORED_DIRS.has(entry.name)) continue;
+      const fullPath = path.join(currentDir, entry.name);
+      const relPath = path.relative(packageDir, fullPath).replace(/\\/g, '/');
+
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (entry.isFile()) {
+        const ext = path.extname(entry.name).toLowerCase();
+        if (SCRIPT_EXTENSIONS.has(ext)) {
+          const parts = relPath.split('/');
+          const inSkills = parts[0] === 'skills';
+          const inScripts = parts.includes('scripts');
+          if (inSkills || inScripts) {
+            scriptPaths.push(fullPath);
+          }
+        }
+      }
+    }
+  }
+
+  walk(packageDir);
+  return scriptPaths;
+}
+
+function analyzeScript(packageDir: string, filePath: string): ScriptAnalysis {
+  const relPath = path.relative(packageDir, filePath).replace(/\\/g, '/');
+  let content = '';
+  try {
+    content = fs.readFileSync(filePath, 'utf-8');
+  } catch {
+    return {
+      path: relPath,
+      warnings: [`Unable to read script file: ${relPath}`],
+      riskLevel: 'MEDIUM',
+    };
+  }
+
+  const warnings: string[] = [];
+  let riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' = 'LOW';
+
+  // 1. Remote piped execution
+  const remotePipeRegexes = [
+    /curl\s+[^|\r\n]*\|\s*(?:sudo\s+)?(?:ba|z)?sh\b/i,
+    /wget\s+[^|\r\n]*\|\s*(?:sudo\s+)?(?:ba|z)?sh\b/i,
+    /\bInvoke-Expression\b/i,
+    /\biex\b/i,
+    /\birm\s+[^|\r\n]*\|\s*iex\b/i,
+  ];
+
+  for (const regex of remotePipeRegexes) {
+    if (regex.test(content)) {
+      warnings.push(`Remote piped execution detected (curl|sh, wget|bash, iex, or Invoke-Expression) in ${relPath}`);
+      riskLevel = 'HIGH';
+      break;
+    }
+  }
+
+  // 2. Hardcoded secrets / credentials
+  const secretRegexes: { name: string; pattern: RegExp }[] = [
+    { name: 'GitHub Token', pattern: /ghp_[A-Za-z0-9_]{36}/ },
+    { name: 'OpenAI/Anthropic API Key', pattern: /sk-[A-Za-z0-9]{32,}/ },
+    { name: 'AWS Access Key', pattern: /\bAKIA[0-9A-Z]{16}\b/ },
+    { name: 'Private Key', pattern: /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/ },
+    { name: 'Bearer Token', pattern: /Bearer\s+[A-Za-z0-9_\-\.]{20,}/i },
+  ];
+
+  for (const { name, pattern } of secretRegexes) {
+    if (pattern.test(content)) {
+      warnings.push(`Hardcoded secret/credential detected (${name}) in ${relPath}`);
+      riskLevel = 'HIGH';
+    }
+  }
+
+  // 3. Destructive commands
+  const destructiveRegexes: { desc: string; pattern: RegExp }[] = [
+    { desc: 'rm -rf /', pattern: /rm\s+-(?:r[a-z]*f|f[a-z]*r)\s+[\/\~]/i },
+    { desc: 'Remove-Item -Recurse -Force /', pattern: /Remove-Item\s+.*-Recurse.*-Force/i },
+    { desc: 'Remove-Item -Force -Recurse /', pattern: /Remove-Item\s+.*-Force.*-Recurse/i },
+    { desc: 'format command', pattern: /\bformat\s+[a-zA-Z]:/i },
+    { desc: 'format command', pattern: /\bformat\s+\//i },
+  ];
+
+  for (const { desc, pattern } of destructiveRegexes) {
+    if (pattern.test(content)) {
+      warnings.push(`Destructive command detected (${desc}) in ${relPath}`);
+      riskLevel = 'HIGH';
+      break;
+    }
+  }
+
+  return {
+    path: relPath,
+    warnings,
+    riskLevel,
+  };
+}
+
+function calculateTokenFootprint(packageDir: string): {
+  rulesTokens: number;
+  skillsTokens: number;
+  totalTokens: number;
+} {
+  let rulesChars = 0;
+
+  // Root rules.md if any
+  const rootRulesMd = path.join(packageDir, 'rules.md');
+  if (fs.existsSync(rootRulesMd)) {
+    try {
+      if (fs.statSync(rootRulesMd).isFile()) {
+        const content = fs.readFileSync(rootRulesMd, 'utf-8');
+        rulesChars += content.trim().length;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // All markdown files in rules/
+  const rulesDir = path.join(packageDir, 'rules');
+  if (fs.existsSync(rulesDir)) {
+    try {
+      if (fs.statSync(rulesDir).isDirectory()) {
+        const scanRules = (dir: string): void => {
+          let entries: fs.Dirent[];
+          try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+          } catch {
+            return;
+          }
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+              scanRules(fullPath);
+            } else if (entry.isFile() && entry.name.endsWith('.md')) {
+              try {
+                const content = fs.readFileSync(fullPath, 'utf-8');
+                rulesChars += content.trim().length;
+              } catch {
+                // ignore
+              }
+            }
+          }
+        };
+        scanRules(rulesDir);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  const rulesTokens = estimateTokens(rulesChars);
+
+  // Skill definitions in skills/*/SKILL.md
+  let skillsChars = 0;
+  const skillsDir = path.join(packageDir, 'skills');
+  if (fs.existsSync(skillsDir)) {
+    try {
+      if (fs.statSync(skillsDir).isDirectory()) {
+        let entries: string[];
+        try {
+          entries = fs.readdirSync(skillsDir);
+        } catch {
+          entries = [];
+        }
+        for (const entry of entries) {
+          const skillFolder = path.join(skillsDir, entry);
+          try {
+            if (!fs.statSync(skillFolder).isDirectory()) continue;
+          } catch {
+            continue;
+          }
+          const skillMd = path.join(skillFolder, 'SKILL.md');
+          if (fs.existsSync(skillMd)) {
+            try {
+              const content = fs.readFileSync(skillMd, 'utf-8');
+              const { meta } = parseFrontmatter(content);
+              const name = meta.name ? String(meta.name) : entry;
+              const description = meta.description ? String(meta.description) : '';
+              const registryText = `${name}: ${description}`.trim();
+              skillsChars += registryText.length;
+            } catch {
+              // ignore
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  const skillsTokens = estimateTokens(skillsChars);
+  const totalTokens = rulesTokens + skillsTokens;
+
+  return {
+    rulesTokens,
+    skillsTokens,
+    totalTokens,
+  };
+}
+
+/**
+ * Analyzes an AgentHub package for security, dependencies, and token footprint.
+ */
+export function analyzePackage(packageDir: string, fallbackName?: string): PackageAnalysisReport {
+  const manifest = getEffectiveManifest(packageDir, fallbackName);
+  const topLevelWarnings: string[] = [];
+
+  // MCP Servers Analysis
+  const mcpConfigFile = findMcpConfigFile(packageDir);
+  const mcpServers: McpServerAnalysis[] = [];
+  if (mcpConfigFile) {
+    const { servers, warnings: parseWarnings } = parseMcpServers(mcpConfigFile);
+    topLevelWarnings.push(...parseWarnings);
+    for (const [name, config] of Object.entries(servers)) {
+      mcpServers.push(analyzeMcpServer(name, config));
+    }
+  }
+
+  // Scripts Analysis
+  const scriptFiles = collectScriptFiles(packageDir);
+  const scripts: ScriptAnalysis[] = scriptFiles.map((sf) => analyzeScript(packageDir, sf));
+
+  // Required Env Vars
+  const envVarsSet = new Set<string>();
+  for (const s of mcpServers) {
+    for (const v of s.envVars) {
+      envVarsSet.add(v);
+    }
+  }
+  const envVarsRequired = Array.from(envVarsSet).sort();
+
+  // Token Footprint
+  const tokenFootprint = calculateTokenFootprint(packageDir);
+
+  // Combined deduplicated warnings
+  const warningsSet = new Set<string>();
+  for (const w of topLevelWarnings) {
+    warningsSet.add(w);
+  }
+  for (const s of mcpServers) {
+    for (const w of s.warnings) {
+      warningsSet.add(w);
+    }
+  }
+  for (const sc of scripts) {
+    for (const w of sc.warnings) {
+      warningsSet.add(w);
+    }
+  }
+  const warnings = Array.from(warningsSet);
+
+  // Overall risk assessment
+  let riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' = 'LOW';
+  if (
+    mcpServers.some((s) => s.riskLevel === 'HIGH') ||
+    scripts.some((sc) => sc.riskLevel === 'HIGH')
+  ) {
+    riskLevel = 'HIGH';
+  } else if (
+    mcpServers.some((s) => s.riskLevel === 'MEDIUM') ||
+    scripts.some((sc) => sc.riskLevel === 'MEDIUM')
+  ) {
+    riskLevel = 'MEDIUM';
+  }
+
+  // isClean: true if risk is 'LOW' and no warnings/secrets found; false otherwise.
+  const isClean = riskLevel === 'LOW' && warnings.length === 0;
+
+  return {
+    manifest,
+    riskLevel,
+    isClean,
+    mcpServers,
+    scripts,
+    envVarsRequired,
+    tokenFootprint,
+    warnings,
+  };
+}

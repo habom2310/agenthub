@@ -311,3 +311,40 @@ export function projectCodexSkillManifests(
     message: `Generated ${generated.length} Codex skill manifest(s)`,
   };
 }
+
+export interface LinkAllSkillsResult {
+  claude: LinkResult;
+  gemini: LinkResult;
+  codex?: LinkResult;
+}
+
+/**
+ * Links skills across all configured assistant platforms (Claude, Gemini, Codex).
+ */
+export function linkSkillsForAllAssistants(
+  optionsOrHome?: string | { homeDir?: string; hubDir?: string },
+  hubDir?: string
+): LinkAllSkillsResult {
+  let home: string | undefined;
+  let hub: string | undefined;
+  if (typeof optionsOrHome === 'object' && optionsOrHome !== null) {
+    home = optionsOrHome.homeDir;
+    hub = optionsOrHome.hubDir;
+  } else {
+    home = optionsOrHome;
+    hub = hubDir;
+  }
+  const effectiveHome = home || getHomeDir();
+  const effectiveHub = hub || getHubDir();
+
+  const claude = linkSkillsForClaude(effectiveHome, effectiveHub);
+  const gemini = linkSkillsForGemini(effectiveHome, effectiveHub);
+  let codex: LinkResult | undefined;
+  const codexDir = path.join(effectiveHome, '.codex');
+  if (fs.existsSync(codexDir) && fs.statSync(codexDir).isDirectory()) {
+    codex = linkSkillsForCodex(effectiveHome, effectiveHub);
+  }
+  projectCodexSkillManifests(effectiveHub);
+
+  return { claude, gemini, codex };
+}

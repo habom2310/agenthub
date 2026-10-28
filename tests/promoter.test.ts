@@ -77,6 +77,15 @@ describe('promoter', () => {
       expect(expected).toContain('# Only Common');
       expect(expected).not.toContain('code-tools.md');
     });
+
+    it('includes addon rules from rules/addons/*.md', () => {
+      safeWriteFile(path.join(rulesDir, 'common.md'), '# Common Rules\nAlways test.');
+      safeWriteFile(path.join(rulesDir, 'addons', 'security.md'), '# Security Addon\nCheck inputs.');
+
+      const expected = getExpectedRulesText('gemini', rulesDir);
+      expect(expected).toContain('# Common Rules\nAlways test.');
+      expect(expected).toContain('# Security Addon\nCheck inputs.');
+    });
   });
 
   describe('detectRuleDrift', () => {
@@ -110,6 +119,45 @@ describe('promoter', () => {
       expect(audit.claude.hasDrift).toBe(false);
       expect(audit.codex.exists).toBe(true);
       expect(audit.codex.hasDrift).toBe(false);
+    });
+
+    it('detects no drift when downstream targets match projected hub rules with addons', () => {
+      safeWriteFile(path.join(rulesDir, 'common.md'), '# Common Rules\nRule content.');
+      safeWriteFile(path.join(rulesDir, 'code-tools.md'), '# Code Tools\nTool content.');
+      safeWriteFile(path.join(rulesDir, 'handoffs.md'), '# Handoffs\nHandoff content.');
+      safeWriteFile(path.join(rulesDir, 'overrides', 'agy.md'), '# Gemini Override\nAGY content.');
+      safeWriteFile(path.join(rulesDir, 'overrides', 'claude.md'), '# Claude Override\nClaude content.');
+      safeWriteFile(path.join(rulesDir, 'overrides', 'codex.md'), '# Codex Override\nCodex content.');
+      safeWriteFile(path.join(rulesDir, 'addons', 'security.md'), '# Security Rules\nValidate all inputs.');
+
+      projectGeminiRules(homeDir, hubDir);
+      projectClaudeRules({ homeDir, hubDir, useImports: true });
+      projectCodexRules(homeDir, hubDir);
+
+      const audit = detectRuleDrift(homeDir, hubDir);
+      expect(audit.gemini.exists).toBe(true);
+      expect(audit.gemini.hasDrift).toBe(false);
+      expect(audit.claude.exists).toBe(true);
+      expect(audit.claude.hasDrift).toBe(false);
+      expect(audit.codex.exists).toBe(true);
+      expect(audit.codex.hasDrift).toBe(false);
+    });
+
+    it('detects drift when expected addon @import is missing in Claude manifest', () => {
+      safeWriteFile(path.join(rulesDir, 'common.md'), '# Common');
+      safeWriteFile(path.join(rulesDir, 'addons', 'security.md'), '# Security');
+
+      // Claude manifest without addon import
+      const claudeFile = path.join(homeDir, '.claude', 'CLAUDE.md');
+      const manifestWithoutAddon = [
+        HEADER_GUARD,
+        '@' + path.join(rulesDir, 'common.md').replace(/\\/g, '/'),
+      ].join('\n\n') + '\n';
+      safeWriteFile(claudeFile, manifestWithoutAddon);
+
+      const audit = detectRuleDrift(homeDir, hubDir);
+      expect(audit.claude.hasDrift).toBe(true);
+      expect(audit.claude.removed.some((r) => r.header.includes('addons/security.md'))).toBe(true);
     });
 
     it('detects downstream drift when content is modified or added', () => {

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { safeWriteFile } from '../utils/fs.js';
 import { getHubDir } from './detector.js';
+import { getAddonRuleFiles } from './projector.js';
 
 export interface ExportTargetConfig {
   title: string;
@@ -66,6 +67,17 @@ export function exportRules(
   for (const rel of filesToRead) {
     const fullPath = path.join(hub, rel);
     if (fs.existsSync(fullPath)) {
+      const text = fs.readFileSync(fullPath, 'utf-8').trim();
+      if (text) {
+        parts.push(text);
+      }
+    }
+  }
+
+  const addonFiles = getAddonRuleFiles(hub);
+  for (const addonFile of addonFiles) {
+    const fullPath = path.join(hub, 'rules', addonFile);
+    if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
       const text = fs.readFileSync(fullPath, 'utf-8').trim();
       if (text) {
         parts.push(text);

@@ -29,10 +29,26 @@ function extractDescription(readmePath: string): string {
     // Strip YAML frontmatter if present
     const stripped = content.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '');
     const lines = stripped.split(/\r?\n/);
+    let inComment = false;
     for (const rawLine of lines) {
       const line = rawLine.trim();
       if (!line) continue;
+      if (inComment) {
+        if (line.includes('-->')) {
+          inComment = false;
+        }
+        continue;
+      }
+      if (line.startsWith('<!--')) {
+        if (!line.includes('-->')) {
+          inComment = true;
+        }
+        continue;
+      }
       if (line.startsWith('#')) continue;
+      if (line.startsWith('![') || line.startsWith('[![')) continue;
+      if (line.startsWith('---') || /^[-*_]{3,}$/.test(line)) continue;
+      if (/^<\/?[a-zA-Z]/.test(line) || (line.startsWith('<') && line.endsWith('>'))) continue;
       return line;
     }
   } catch {
@@ -42,6 +58,9 @@ function extractDescription(readmePath: string): string {
 }
 
 function inferPlatforms(dir: string): string[] {
+  if (fs.existsSync(path.join(dir, 'rules', 'common.md'))) {
+    return [...DEFAULT_PLATFORMS];
+  }
   const overridesDir = path.join(dir, 'rules', 'overrides');
   try {
     if (fs.existsSync(overridesDir) && fs.statSync(overridesDir).isDirectory()) {
@@ -111,6 +130,9 @@ export function inferManifest(dir: string, fallbackName?: string): AgentPackageM
 export function getEffectiveManifest(dir: string, fallbackName?: string): AgentPackageManifest {
   const loaded = loadManifest(dir);
   if (loaded) {
+    if (!loaded.name) {
+      loaded.name = fallbackName || path.basename(path.resolve(dir));
+    }
     return loaded;
   }
   return inferManifest(dir, fallbackName);

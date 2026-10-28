@@ -2,6 +2,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
 import { Command } from 'commander';
 import pc from 'picocolors';
@@ -13,6 +14,7 @@ import {
   detectRuleDrift,
   exportRules,
   getHomeDir,
+  getHubDir,
   gitInitHub,
   gitPull,
   gitPush,
@@ -21,12 +23,19 @@ import {
   linkSkillsForClaude,
   linkSkillsForCodex,
   linkSkillsForGemini,
+  packageAdd,
+  packageInfo,
+  profileCreate,
+  profileList,
+  profileUse,
   projectAll,
   promoteChunk,
   runDoctor,
   setCustomHome,
+  shareSetup,
   syncMcpServers,
   getMcpStatus,
+  uninstallHub,
   type MarkdownChunk,
   type PlatformDriftTarget,
 } from './index.js';
@@ -56,6 +65,20 @@ export function buildCli(): Command {
       setCustomHome(path.resolve(home));
     }
   };
+
+  function promptConfirm(question: string): Promise<boolean> {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    return new Promise((resolve) => {
+      rl.question(question, (answer) => {
+        rl.close();
+        const trimmed = answer.trim().toLowerCase();
+        resolve(trimmed === 'y' || trimmed === 'yes');
+      });
+    });
+  }
 
   // 1. detect
   program
@@ -207,6 +230,9 @@ export function buildCli(): Command {
 
       console.log(pc.bold('Token Budget Audit:'));
       console.log(`  Core rules tokens:      ${audit.core_rules_tokens}`);
+      if (audit.addons_rules_tokens > 0) {
+        console.log(`  Addon rules tokens:     ${audit.addons_rules_tokens}`);
+      }
       console.log(`  Skills registry tokens: ${audit.skills_registry_tokens} (${audit.skills_count} skills)`);
       console.log(`  Total boot tokens:      ${audit.total_boot_tokens}`);
       console.log(`  Target budget:          ${audit.budget}`);
@@ -508,6 +534,414 @@ export function buildCli(): Command {
       }
     });
 
+  // 15. info
+  program
+    .command('info <target>')
+    .description('Inspect and display security analysis, token footprint, and metadata for a package')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action((target, options) => {
+      applyHomeOverride(options);
+      try {
+        const report = packageInfo(target);
+        const { manifest, tokenFootprint, riskLevel, isClean, mcpServers, scripts, envVarsRequired, warnings } = report;
+
+        const riskColor = riskLevel === 'LOW' ? pc.green : riskLevel === 'MEDIUM' ? pc.yellow : pc.red;
+        const cleanColor = isClean ? pc.green('Yes') : pc.yellow('No');
+
+        console.log(pc.bold(`Package: ${manifest.name}`));
+        if (manifest.version) console.log(`  Version:       ${manifest.version}`);
+        console.log(`  Type:          ${manifest.type || 'addon'}`);
+        if (manifest.description) console.log(`  Description:   ${manifest.description}`);
+        const platforms = manifest.platforms?.length ? manifest.platforms.join(', ') : 'all';
+        console.log(`  Platforms:     ${platforms}`);
+
+        console.log(pc.bold('\nToken Footprint:'));
+        console.log(`  Rules tokens:  ${tokenFootprint.rulesTokens}`);
+        console.log(`  Skills tokens: ${tokenFootprint.skillsTokens}`);
+        console.log(`  Total tokens:  ${tokenFootprint.totalTokens}`);
+
+        console.log(pc.bold('\nSecurity Assessment:'));
+        console.log(`  Risk level:    ${riskColor(riskLevel)}`);
+        console.log(`  Clean status:  ${cleanColor}`);
+
+        if (envVarsRequired.length > 0) {
+          console.log(`  Required Env:  ${envVarsRequired.join(', ')}`);
+        }
+
+        if (mcpServers.length > 0) {
+          console.log(pc.bold(`\nMCP Servers (${mcpServers.length}):`));
+          for (const s of mcpServers) {
+            const sRisk = s.riskLevel === 'LOW' ? pc.green(s.riskLevel) : s.riskLevel === 'MEDIUM' ? pc.yellow(s.riskLevel) : pc.red(s.riskLevel);
+            console.log(`  - ${pc.cyan(s.name)} [Risk: ${sRisk}]`);
+            console.log(`    Command: ${s.command}${s.args?.length ? ' ' + s.args.join(' ') : ''}`);
+            if (s.envVars?.length) {
+              console.log(`    Env vars: ${s.envVars.join(', ')}`);
+            }
+            if (s.warnings?.length) {
+              for (const w of s.warnings) {
+                console.log(pc.yellow(`    ⚠ ${w}`));
+              }
+            }
+          }
+        }
+
+        if (scripts.length > 0) {
+          console.log(pc.bold(`\nExecutable Scripts (${scripts.length}):`));
+          for (const sc of scripts) {
+            const scRisk = sc.riskLevel === 'LOW' ? pc.green(sc.riskLevel) : sc.riskLevel === 'MEDIUM' ? pc.yellow(sc.riskLevel) : pc.red(sc.riskLevel);
+            console.log(`  - ${pc.cyan(sc.path)} [Risk: ${scRisk}]`);
+            if (sc.warnings?.length) {
+              for (const w of sc.warnings) {
+                console.log(pc.yellow(`    ⚠ ${w}`));
+              }
+            }
+          }
+        }
+
+        if (warnings.length > 0 && mcpServers.length === 0 && scripts.length === 0) {
+          console.log(pc.bold('\nWarnings:'));
+          for (const w of warnings) {
+            console.log(pc.yellow(`  ⚠ ${w}`));
+          }
+        }
+      } catch (err) {
+        console.error(pc.red(`✗ ${(err as Error).message}`));
+        process.exitCode = 1;
+      }
+    });
+
+  // 16. add
+  program
+    .command('add <target>')
+    .description('Install an agent package or addon into the hub')
+    .option('-r, --rules-only', 'Only install rules (skip skills and MCP servers)')
+    .option('-s, --skill <name>', 'Install specific skill (repeatable or comma-separated)', (val: string, prev: string[]) => {
+      const items = val.split(',').map((s) => s.trim()).filter(Boolean);
+      return [...prev, ...items];
+    }, [] as string[])
+    .option('-y, --yes', 'Skip interactive security confirmation')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action(async (target, options) => {
+      applyHomeOverride(options);
+      try {
+        if (!options.yes && process.stdin.isTTY) {
+          const report = packageInfo(target);
+          const hasMcp = report.mcpServers.length > 0;
+          const hasScripts = report.scripts.length > 0;
+          const isHighRisk = report.riskLevel === 'MEDIUM' || report.riskLevel === 'HIGH';
+
+          if (hasMcp || hasScripts || isHighRisk) {
+            console.log(pc.bold(pc.yellow('\nSecurity Notice:')));
+            if (isHighRisk) {
+              const riskColor = report.riskLevel === 'HIGH' ? pc.red : pc.yellow;
+              console.log(`  Package Risk Level: ${riskColor(report.riskLevel)}`);
+            }
+            if (hasMcp) {
+              console.log(`  This package configures MCP servers (${report.mcpServers.map((s) => s.name).join(', ')}).`);
+            }
+            if (hasScripts) {
+              console.log(`  This package contains executable scripts (${report.scripts.map((s) => s.path).join(', ')}).`);
+            }
+            if (report.warnings.length > 0) {
+              console.log(pc.dim('  Warnings:'));
+              for (const w of report.warnings) {
+                console.log(pc.yellow(`    ⚠ ${w}`));
+              }
+            }
+            console.log('');
+            const confirmed = await promptConfirm('Do you want to proceed? [y/N] ');
+            if (!confirmed) {
+              console.log(pc.yellow('Installation aborted.'));
+              process.exitCode = 1;
+              return;
+            }
+          }
+        }
+
+        let selectedSkills: string[] | undefined;
+        if (Array.isArray(options.skill) && options.skill.length > 0) {
+          selectedSkills = options.skill;
+        } else if (typeof options.skill === 'string' && options.skill.trim()) {
+          selectedSkills = options.skill.split(',').map((s: string) => s.trim()).filter(Boolean);
+        }
+
+        const res = packageAdd(target, {
+          rulesOnly: Boolean(options.rulesOnly),
+          skills: selectedSkills,
+        });
+
+        console.log(pc.green(`✓ Successfully installed package "${res.identifier}"`));
+        if (res.installedRules) {
+          console.log(`  Rules:       Installed to rules/addons/${res.identifier}.md`);
+        } else {
+          console.log(`  Rules:       None`);
+        }
+        if (res.installedSkills.length > 0) {
+          console.log(`  Skills:      ${res.installedSkills.join(', ')}`);
+        } else {
+          console.log(`  Skills:      None`);
+        }
+        if (res.mergedMcpServers.length > 0) {
+          console.log(`  MCP Servers: ${res.mergedMcpServers.join(', ')}`);
+        } else {
+          console.log(`  MCP Servers: None`);
+        }
+        console.log(`  Projection:  Auto-projected rules and linked skills across assistants.`);
+      } catch (err) {
+        console.error(pc.red(`✗ ${(err as Error).message}`));
+        process.exitCode = 1;
+      }
+    });
+
+  // 17. profile
+  program
+    .command('profile [action] [target]')
+    .description('Manage AgentHub environment profiles')
+    .option('-y, --yes', 'Skip security confirmation for remote profiles')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action(async (action, target, options) => {
+      applyHomeOverride(options);
+      const act = action || 'list';
+
+      if (act === 'list') {
+        const res = profileList();
+        console.log(pc.bold('AgentHub Profiles:'));
+        for (const p of res.profiles) {
+          if (p === res.active) {
+            console.log(`* ${pc.green(p)} ${pc.dim('(active)')}`);
+          } else {
+            console.log(`  ${p}`);
+          }
+        }
+      } else if (act === 'create') {
+        if (!target) {
+          console.error(pc.red('✗ Profile name is required. Usage: agenthub profile create <name>'));
+          process.exitCode = 1;
+          return;
+        }
+        const res = profileCreate(target);
+        if (res.success) {
+          console.log(pc.green(`✓ ${res.message}`));
+        } else {
+          console.error(pc.red(`✗ ${res.message}`));
+          process.exitCode = 1;
+        }
+      } else if (act === 'use') {
+        if (!target) {
+          console.error(pc.red('✗ Target profile or package is required. Usage: agenthub profile use <target>'));
+          process.exitCode = 1;
+          return;
+        }
+
+        if (!options.yes && process.stdin.isTTY) {
+          const hub = getHubDir();
+          const localProfileDir = path.join(hub, 'profiles', target);
+          let isLocal = false;
+          try {
+            isLocal = fs.existsSync(localProfileDir) && fs.statSync(localProfileDir).isDirectory();
+          } catch {
+            isLocal = false;
+          }
+
+          if (!isLocal) {
+            try {
+              const report = packageInfo(target);
+              const hasMcp = report.mcpServers.length > 0;
+              const hasScripts = report.scripts.length > 0;
+              const isHighRisk = report.riskLevel === 'MEDIUM' || report.riskLevel === 'HIGH';
+
+              if (hasMcp || hasScripts || isHighRisk) {
+                console.log(pc.bold(pc.yellow('\nSecurity Notice:')));
+                if (isHighRisk) {
+                  const riskColor = report.riskLevel === 'HIGH' ? pc.red : pc.yellow;
+                  console.log(`  Profile Risk Level: ${riskColor(report.riskLevel)}`);
+                }
+                if (hasMcp) {
+                  console.log(`  This profile configures MCP servers (${report.mcpServers.map((s) => s.name).join(', ')}).`);
+                }
+                if (hasScripts) {
+                  console.log(`  This profile contains executable scripts (${report.scripts.map((s) => s.path).join(', ')}).`);
+                }
+                if (report.warnings.length > 0) {
+                  console.log(pc.dim('  Warnings:'));
+                  for (const w of report.warnings) {
+                    console.log(pc.yellow(`    ⚠ ${w}`));
+                  }
+                }
+                console.log('');
+                const confirmed = await promptConfirm('Do you want to switch to this profile? [y/N] ');
+                if (!confirmed) {
+                  console.log(pc.yellow('Profile switch aborted.'));
+                  process.exitCode = 1;
+                  return;
+                }
+              }
+            } catch {
+              // Let profileUse handle target resolution error
+            }
+          }
+        }
+
+        const res = profileUse(target, { yes: options.yes });
+        if (res.success) {
+          console.log(pc.green(`✓ ${res.message}`));
+          console.log(`  Active Profile: ${pc.bold(res.name)} (switched from ${res.previous})`);
+          console.log(`  Type:           ${res.isRemote ? 'Remote package' : 'Local profile'}`);
+          console.log(`  Projection:     Auto-projected rules, linked skills, and synchronized MCP configs.`);
+        } else {
+          console.error(pc.red(`✗ ${res.message}`));
+          process.exitCode = 1;
+        }
+      } else {
+        console.error(pc.red(`✗ Unknown profile action "${act}". Expected "list", "create", or "use".`));
+        process.exitCode = 1;
+      }
+    });
+
+  // 18. share
+  program
+    .command('share')
+    .description('Audit, push, and generate share commands for hub setup')
+    .option('-m, --message <msg>', 'Git commit message')
+    .option('-r, --remote <remote>', 'Remote repository name', 'origin')
+    .option('-b, --branch <branch>', 'Branch to push')
+    .option('-f, --force', 'Force sharing even if security risks or secrets are detected')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action((options) => {
+      applyHomeOverride(options);
+      const res = shareSetup({
+        commitMessage: options.message,
+        remote: options.remote,
+        branch: options.branch,
+        force: options.force,
+      });
+
+      if (!res.success) {
+        console.error(pc.red(`✗ ${res.message}`));
+        if (res.warnings.length > 0) {
+          console.log(pc.yellow('\nWarnings:'));
+          for (const w of res.warnings) {
+            console.log(pc.yellow(`  ⚠ ${w}`));
+          }
+        }
+        process.exitCode = 1;
+        return;
+      }
+
+      console.log(pc.green(`✓ ${res.message}`));
+      if (res.warnings.length > 0) {
+        console.log(pc.yellow('\nWarnings:'));
+        for (const w of res.warnings) {
+          console.log(pc.yellow(`  ⚠ ${w}`));
+        }
+      }
+
+      console.log(pc.bold('\nShare Commands:'));
+      console.log(`  ${pc.cyan(res.shareCommand)}`);
+      console.log(`  ${pc.cyan(res.profileCommand)}`);
+    });
+
+  // 19. uninstall
+  program
+    .command('uninstall')
+    .description('Rollback assistant rules and junctions to original state, and optionally remove hub')
+    .option('-y, --yes', 'Skip confirmation prompts')
+    .option('--purge', 'Purge hub directory without prompting')
+    .option('--dry-run', 'Preview rollback changes without modifying filesystem')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action(async (options) => {
+      applyHomeOverride(options);
+      const hub = getHubDir();
+      const home = getHomeDir();
+
+      if (options.dryRun) {
+        console.log(pc.yellow('Running in dry-run mode (no changes will be applied)...\n'));
+      }
+
+      if (!options.yes && !options.dryRun && process.stdin.isTTY) {
+        console.log(pc.bold(pc.yellow('AgentHub Rollback & Uninstall')));
+        console.log(`  Target Home: ${home}`);
+        console.log(`  Target Hub:  ${hub}`);
+        console.log('');
+        console.log('This will:');
+        console.log('  1. Restore pre-agenthub configuration backups to your assistants.');
+        console.log('  2. Revert skills junctions (re-pointing to ~/.agentrc/skills if available).');
+        console.log('  3. Remove autogenerated agenthub rules and subagents.');
+        console.log('');
+
+        const proceed = await promptConfirm('Do you want to proceed with rollback? [y/N] ');
+        if (!proceed) {
+          console.log(pc.yellow('Uninstall aborted.'));
+          process.exitCode = 1;
+          return;
+        }
+      }
+
+      let purge = Boolean(options.purge);
+      if (!purge && !options.yes && !options.dryRun && process.stdin.isTTY) {
+        console.log('');
+        const purgeConfirmed = await promptConfirm(`Would you like to delete the hub directory (${hub}) as well? [y/N] `);
+        purge = purgeConfirmed;
+      }
+
+      const res = uninstallHub({
+        home,
+        hub,
+        dryRun: Boolean(options.dryRun),
+        purge,
+      });
+
+      if (!res.success) {
+        console.error(pc.red('✗ Uninstall encountered errors:'));
+        for (const err of res.errors) {
+          console.error(pc.red(`  • ${err}`));
+        }
+        process.exitCode = 1;
+        return;
+      }
+
+      console.log(pc.green(pc.bold('\n✓ Rollback completed successfully!')));
+
+      if (res.backupRestored) {
+        console.log(pc.cyan(`\nRestored from backup: ${res.backupRestored}`));
+        for (const f of res.restoredFiles) {
+          console.log(`  • Restored ${f}`);
+        }
+      } else {
+        console.log(pc.dim('\nNo pre-agenthub backup found to restore.'));
+      }
+
+      if (res.unlinkedJunctions.length > 0) {
+        console.log(pc.cyan('\nUnlinked junctions:'));
+        for (const j of res.unlinkedJunctions) {
+          console.log(`  • Unlinked ${j}`);
+        }
+      }
+
+      if (res.restoredJunctions.length > 0) {
+        console.log(pc.cyan('\nRestored junctions:'));
+        for (const j of res.restoredJunctions) {
+          console.log(`  • Restored ${j}`);
+        }
+      }
+
+      if (res.removedFiles.length > 0) {
+        console.log(pc.cyan('\nRemoved generated files:'));
+        for (const f of res.removedFiles) {
+          console.log(`  • Removed ${f}`);
+        }
+      }
+
+      if (res.purgedHub) {
+        console.log(pc.green(`\n✓ Purged hub directory: ${hub}`));
+      } else if (!options.dryRun) {
+        console.log(pc.dim(`\nHub directory preserved at: ${hub}`));
+      }
+
+      console.log(pc.bold('\nNext step:'));
+      console.log(`  To completely remove the CLI command, run: ${pc.cyan('npm uninstall -g @habom2310/agenthub')}`);
+    });
+
   return program;
 }
 
@@ -532,5 +966,7 @@ if (process.argv[1]) {
 
 if (isMain) {
   const cli = buildCli();
-  cli.parse(process.argv);
+  cli.parseAsync(process.argv).catch(() => {
+    process.exitCode = process.exitCode || 1;
+  });
 }

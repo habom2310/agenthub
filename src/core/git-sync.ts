@@ -273,15 +273,38 @@ export function gitInitHub(hubDir?: string, remoteUrl?: string): GitOperationRes
   return { ok: true, message: 'Initialized git repository in hub' };
 }
 
+export interface GitPushOptions {
+  hubDir?: string;
+  commitMessage?: string;
+  message?: string;
+  remote?: string;
+  branch?: string;
+}
+
 /**
  * Adds, commits, and pushes changes from the hub to remote repository.
  */
 export function gitPush(
-  hubDir?: string,
+  optionsOrHubDir?: string | GitPushOptions,
   message?: string,
   remote = 'origin',
   branch?: string
 ): GitOperationResult {
+  let hubDir: string | undefined;
+  let commitMsg: string | undefined;
+  let remoteName = remote;
+  let targetBranch = branch;
+
+  if (optionsOrHubDir && typeof optionsOrHubDir === 'object') {
+    hubDir = optionsOrHubDir.hubDir;
+    commitMsg = optionsOrHubDir.commitMessage ?? optionsOrHubDir.message;
+    remoteName = optionsOrHubDir.remote || 'origin';
+    targetBranch = optionsOrHubDir.branch;
+  } else {
+    hubDir = optionsOrHubDir;
+    commitMsg = message;
+  }
+
   const hub = hubDir || getHubDir();
 
   if (!isGitInstalled()) {
@@ -307,7 +330,7 @@ export function gitPush(
   // Check porcelain status for uncommitted changes
   const statusRes = runGit(['status', '--porcelain'], hub);
   if (statusRes.stdout.trim()) {
-    const commitMsg = message || `agenthub sync: ${new Date().toISOString()}`;
+    const finalCommitMsg = commitMsg || `agenthub sync: ${new Date().toISOString()}`;
 
     // Check git user.name and user.email independently
     const userNameRes = runGit(['config', 'user.name'], hub);
@@ -322,7 +345,7 @@ export function gitPush(
     if (!userEmail) {
       commitArgs.push('-c', 'user.email=agenthub@local');
     }
-    commitArgs.push('commit', '-m', commitMsg);
+    commitArgs.push('commit', '-m', finalCommitMsg);
 
     const commitRes = runGit(commitArgs, hub);
     if (commitRes.status !== 0) {
@@ -335,28 +358,28 @@ export function gitPush(
 
   // Check remotes
   const status = gitStatus(hub);
-  if (!status.remotes[remote]) {
+  if (!status.remotes[remoteName]) {
     return {
       ok: true,
       message: 'Changes committed locally. No remote configured, skipping push.',
     };
   }
 
-  const targetBranch = branch || status.branch || 'main';
-  let pushRes = runGit(['push', '-u', remote, targetBranch], hub);
+  const pushBranch = targetBranch || status.branch || 'main';
+  let pushRes = runGit(['push', '-u', remoteName, pushBranch], hub);
   if (pushRes.status !== 0) {
-    pushRes = runGit(['push', remote, targetBranch], hub);
+    pushRes = runGit(['push', remoteName, pushBranch], hub);
     if (pushRes.status !== 0) {
       return {
         ok: false,
-        message: redactGitSecrets(`Failed to push to ${remote}: ${pushRes.stderr || pushRes.stdout}`.trim()),
+        message: redactGitSecrets(`Failed to push to ${remoteName}: ${pushRes.stderr || pushRes.stdout}`.trim()),
       };
     }
   }
 
   return {
     ok: true,
-    message: redactGitSecrets(`Pushed changes to ${remote}/${targetBranch}`),
+    message: redactGitSecrets(`Pushed changes to ${remoteName}/${pushBranch}`),
   };
 }
 

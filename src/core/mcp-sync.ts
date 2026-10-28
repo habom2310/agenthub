@@ -108,9 +108,12 @@ function deepEqual(a: unknown, b: unknown): boolean {
   return true;
 }
 
-export function getMcpStatus(homeDir?: string, hubDir?: string): McpStatusReport {
-  const home = homeDir || getHomeDir();
-  const hub = hubDir || getHubDir();
+export function getMcpStatus(
+  homeDirOrOptions?: string | { homeDir?: string; hubDir?: string },
+  hubDir?: string
+): McpStatusReport {
+  const home = (typeof homeDirOrOptions === 'object' && homeDirOrOptions ? homeDirOrOptions.homeDir : homeDirOrOptions) || getHomeDir();
+  const hub = (typeof homeDirOrOptions === 'object' && homeDirOrOptions ? homeDirOrOptions.hubDir : hubDir) || getHubDir();
 
   const hubPath = path.join(hub, 'mcp', 'servers.json');
   const hubExists = fs.existsSync(hubPath);
@@ -252,9 +255,12 @@ export function getMcpStatus(homeDir?: string, hubDir?: string): McpStatusReport
   };
 }
 
-export function syncMcpServers(homeDir?: string, hubDir?: string): SyncMcpResult {
-  const home = homeDir || getHomeDir();
-  const hub = hubDir || getHubDir();
+export function syncMcpServers(
+  homeDirOrOptions?: string | { homeDir?: string; hubDir?: string },
+  hubDir?: string
+): SyncMcpResult {
+  const home = (typeof homeDirOrOptions === 'object' && homeDirOrOptions ? homeDirOrOptions.homeDir : homeDirOrOptions) || getHomeDir();
+  const hub = (typeof homeDirOrOptions === 'object' && homeDirOrOptions ? homeDirOrOptions.hubDir : hubDir) || getHubDir();
   const actions: string[] = [];
 
   const hubFile = path.join(hub, 'mcp', 'servers.json');
