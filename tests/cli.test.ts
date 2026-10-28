@@ -60,6 +60,82 @@ describe('CLI Integration', () => {
     const fullLog = stripAnsi(logs.join('\n'));
     expect(fullLog).toContain('agenthub initialized successfully!');
     expect(fullLog).toContain('Manifest:');
+    expect(fullLog).toContain('Configured / detected platforms:');
+    expect(fullLog).toContain('All health checks passed');
+  });
+
+  it('setup completes full setup, auto-wires platforms, and passes all health checks', async () => {
+    await runCli(['-H', sandbox, 'setup']);
+
+    const hubManifest = path.join(sandbox, '.agenthub', 'agenthub.json');
+    expect(fs.existsSync(hubManifest)).toBe(true);
+    expect(fs.existsSync(path.join(sandbox, '.claude', 'CLAUDE.md'))).toBe(true);
+    expect(fs.existsSync(path.join(sandbox, '.gemini', 'GEMINI.md'))).toBe(true);
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('✓ agenthub setup completed successfully!');
+    expect(fullLog).toContain('Manifest:');
+    expect(fullLog).toContain('Configured / detected platforms:');
+    expect(fullLog).toContain('All health checks passed');
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('init with --scaffold-only skips auto-wiring assistants', async () => {
+    await runCli(['-H', sandbox, 'init', '--scaffold-only']);
+
+    const hubManifest = path.join(sandbox, '.agenthub', 'agenthub.json');
+    expect(fs.existsSync(hubManifest)).toBe(true);
+    expect(fs.existsSync(path.join(sandbox, '.claude', 'CLAUDE.md'))).toBe(false);
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('agenthub initialized successfully!');
+    expect(fullLog).toContain('Manifest:');
+    expect(fullLog).not.toContain('Configured / detected platforms:');
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('setup with --scaffold-only skips auto-wiring assistants', async () => {
+    await runCli(['-H', sandbox, 'setup', '--scaffold-only']);
+
+    const hubManifest = path.join(sandbox, '.agenthub', 'agenthub.json');
+    expect(fs.existsSync(hubManifest)).toBe(true);
+    expect(fs.existsSync(path.join(sandbox, '.claude', 'CLAUDE.md'))).toBe(false);
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('✓ agenthub setup completed successfully!');
+    expect(fullLog).toContain('Manifest:');
+    expect(fullLog).not.toContain('Configured / detected platforms:');
+    expect(process.exitCode).toBeFalsy();
+  });
+
+  it('setup reports blockers, directs user to resolve and advise doctor --fix, and sets exitCode = 1', async () => {
+    const doctor = await import('../src/core/doctor.js');
+    const index = await import('../src/index.js');
+    const mockedResult = {
+      status: 'WARN' as const,
+      passed_checks: ['Hub manifest exists'],
+      issues: [
+        'Permission denied: cannot write to .claude/skills',
+        'Broken path in ~/.gemini/config/skills.json',
+      ],
+      repairs: [],
+    };
+    const doctorSpy = vi.spyOn(doctor, 'runDoctor').mockReturnValue(mockedResult);
+    const indexSpy = vi.spyOn(index, 'runDoctor').mockReturnValue(mockedResult);
+
+    await runCli(['-H', sandbox, 'setup']);
+
+    const fullLog = stripAnsi(logs.join('\n'));
+    expect(fullLog).toContain('Hub scaffolded:');
+    expect(fullLog).toContain('blocker(s) that could not be automatically repaired:');
+    expect(fullLog).toContain('Permission denied: cannot write to .claude/skills');
+    expect(fullLog).toContain('Broken path in ~/.gemini/config/skills.json');
+    expect(fullLog).toContain('Please resolve the blocker(s) above');
+    expect(fullLog).toContain('agenthub doctor --fix');
+    expect(process.exitCode).toBe(1);
+
+    doctorSpy.mockRestore();
+    indexSpy.mockRestore();
   });
 
   it('detect reports hub status and platform presence', async () => {

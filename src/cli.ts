@@ -41,6 +41,7 @@ import {
   buildPackagePayload,
   type MarkdownChunk,
   type PlatformDriftTarget,
+  type ScaffoldResult,
 } from './index.js';
 
 export function buildCli(): Command {
@@ -115,46 +116,164 @@ export function buildCli(): Command {
       }
     });
 
-  // 2. init
+  function printScaffoldSummary(result: ScaffoldResult, isSetup: boolean): void {
+    console.log(
+      pc.green(
+        pc.bold(
+          isSetup
+            ? '✓ agenthub setup completed successfully!'
+            : '✓ agenthub initialized successfully!'
+        )
+      )
+    );
+    console.log(`  Manifest: ${result.manifest}`);
+
+    if (result.backedUpFiles && result.backedUpFiles.length > 0) {
+      console.log(pc.bold('Backed up files:'));
+      for (const f of result.backedUpFiles) {
+        console.log(`  - ${f}`);
+      }
+    }
+
+    if (result.copiedTemplates && result.copiedTemplates.length > 0) {
+      console.log(pc.bold('Copied templates:'));
+      for (const t of result.copiedTemplates) {
+        console.log(`  - ${t}`);
+      }
+    }
+  }
+
+  const handleSetupOrInit = (
+    commandName: 'setup' | 'init',
+    options: {
+      force?: boolean;
+      migrate?: string;
+      templates?: string;
+      scaffoldOnly?: boolean;
+      home?: string;
+    }
+  ) => {
+    applyHomeOverride(options);
+    const isSetup = commandName === 'setup';
+    try {
+      const result = initHub({
+        force: Boolean(options.force),
+        migrateFrom: options.migrate,
+        templateDir: options.templates,
+      });
+
+      if (options.scaffoldOnly) {
+        printScaffoldSummary(result, isSetup);
+        return;
+      }
+
+      const homeDir = getHomeDir();
+      const hubDir = getHubDir();
+      const doctorRes = runDoctor({ fix: true, homeDir, hubDir });
+
+      if (doctorRes.issues.length > 0) {
+        console.log(pc.dim(`  Hub scaffolded: ${result.manifest}`));
+        console.log(
+          pc.red(
+            pc.bold(
+              `✗ ${
+                isSetup ? 'Setup' : 'Initialization'
+              } encountered ${doctorRes.issues.length} blocker(s) that could not be automatically repaired:`
+            )
+          )
+        );
+        for (const issue of doctorRes.issues) {
+          console.log(`  ${pc.red('•')} ${issue}`);
+        }
+        console.log(
+          pc.yellow(
+            '\nPlease resolve the blocker(s) above (e.g. fix file permissions or broken paths).'
+          )
+        );
+        console.log(
+          pc.dim('Once addressed, run ') +
+            pc.cyan('agenthub doctor --fix') +
+            pc.dim(' to verify and complete the repair.')
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      printScaffoldSummary(result, isSetup);
+
+      console.log(pc.bold('\nConfigured / detected platforms:'));
+      const report = detectPlatforms();
+      const configuredPlatforms: string[] = [];
+      if (report.platforms.antigravity?.detected) {
+        configuredPlatforms.push('Antigravity / Gemini');
+      }
+      if (report.platforms.claude?.detected) {
+        configuredPlatforms.push('Claude Code');
+      }
+      if (report.platforms.codex?.detected) {
+        configuredPlatforms.push('OpenAI Codex');
+      }
+      if (report.platforms.cursor?.detected) {
+        configuredPlatforms.push('Cursor');
+      }
+      if (report.platforms.windsurf?.detected) {
+        configuredPlatforms.push('Windsurf');
+      }
+      if (report.platforms.copilot?.detected) {
+        configuredPlatforms.push('GitHub Copilot (system PATH)');
+      }
+
+      if (configuredPlatforms.length > 0) {
+        for (const name of configuredPlatforms) {
+          console.log(`  ${pc.green('✓')} ${name}`);
+        }
+      } else {
+        console.log(`  ${pc.dim('None detected')}`);
+      }
+
+      console.log(pc.bold('\nHealth checks:'));
+      console.log(
+        `  ${pc.green('✓')} All health checks passed (${doctorRes.passed_checks.length}/${doctorRes.passed_checks.length})`
+      );
+    } catch (err) {
+      console.error(
+        pc.red(
+          `✗ ${isSetup ? 'Setup' : 'Initialization'} failed: ${
+            (err as Error).message
+          }`
+        )
+      );
+      process.exitCode = 1;
+    }
+  };
+
+  // 2. setup
   program
-    .command('init')
-    .description('Initialize agenthub directory structure and default templates')
+    .command('setup')
+    .description('One-command setup: scaffold hub, auto-wire assistants, and configure MCP')
     .option('-f, --force', 'Force overwrite existing template files')
     .option('-m, --migrate <path>', 'Migrate existing configuration from path')
     .option('-t, --templates <dir>', 'Custom templates directory')
+    .option('--scaffold-only', 'Only scaffold ~/.agenthub directory without auto-wiring assistants')
     .option('-H, --home <dir>', 'Sets custom home directory')
     .action((options) => {
-      applyHomeOverride(options);
-      try {
-        const result = initHub({
-          force: Boolean(options.force),
-          migrateFrom: options.migrate,
-          templateDir: options.templates,
-        });
-
-        console.log(pc.green(pc.bold('✓ agenthub initialized successfully!')));
-        console.log(`  Manifest: ${result.manifest}`);
-
-        if (result.backedUpFiles && result.backedUpFiles.length > 0) {
-          console.log(pc.bold('Backed up files:'));
-          for (const f of result.backedUpFiles) {
-            console.log(`  - ${f}`);
-          }
-        }
-
-        if (result.copiedTemplates && result.copiedTemplates.length > 0) {
-          console.log(pc.bold('Copied templates:'));
-          for (const t of result.copiedTemplates) {
-            console.log(`  - ${t}`);
-          }
-        }
-      } catch (err) {
-        console.error(pc.red(`✗ Initialization failed: ${(err as Error).message}`));
-        process.exitCode = 1;
-      }
+      handleSetupOrInit('setup', options);
     });
 
-  // 3. link
+  // 3. init
+  program
+    .command('init')
+    .description('Initialize agenthub directory structure and auto-wire assistants (or --scaffold-only)')
+    .option('-f, --force', 'Force overwrite existing template files')
+    .option('-m, --migrate <path>', 'Migrate existing configuration from path')
+    .option('-t, --templates <dir>', 'Custom templates directory')
+    .option('--scaffold-only', 'Only scaffold ~/.agenthub directory without auto-wiring assistants')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action((options) => {
+      handleSetupOrInit('init', options);
+    });
+
+  // 4. link
   program
     .command('link')
     .description('Link agent skills into configured platforms')
@@ -179,7 +298,7 @@ export function buildCli(): Command {
       }
     });
 
-  // 4. project
+  // 5. project
   program
     .command('project')
     .description('Project unified rules and subagents to configured assistant platforms')
@@ -196,7 +315,7 @@ export function buildCli(): Command {
       }
     });
 
-  // 5. doctor
+  // 6. doctor
   program
     .command('doctor')
     .description('Verify and repair hub junctions, manifests, rules, and configurations')
@@ -221,7 +340,7 @@ export function buildCli(): Command {
       }
     });
 
-  // 6. budget
+  // 7. budget
   program
     .command('budget')
     .description('Audit token overhead of rules and skills registry against boot budget')
@@ -242,7 +361,7 @@ export function buildCli(): Command {
       console.log(`  Status:                 ${statusDisplay}`);
     });
 
-  // 7. diff
+  // 8. diff
   program
     .command('diff')
     .description('Detect drifts between hub source rules and downstream platforms')
@@ -300,7 +419,7 @@ export function buildCli(): Command {
       }
     });
 
-  // 8. promote [targetRuleFile]
+  // 9. promote
   program
     .command('promote [targetRuleFile]')
     .description('Promote downstream rule changes back upstream into hub rules')
@@ -368,7 +487,7 @@ export function buildCli(): Command {
       }
     });
 
-  // 9. mcp <action>
+  // 10. mcp
   program
     .command('mcp <action>')
     .description('Manage MCP servers (status | sync)')
@@ -398,7 +517,7 @@ export function buildCli(): Command {
       }
     });
 
-  // 10. connect <platform>
+  // 11. connect
   program
     .command('connect <platform>')
     .description('Connect an assistant platform by linking skills and projecting rules')
@@ -415,7 +534,7 @@ export function buildCli(): Command {
       }
     });
 
-  // 11. export <target>
+  // 12. export
   program
     .command('export <target>')
     .description('Export concatenated hub rules for external assistant targets')
@@ -442,7 +561,7 @@ export function buildCli(): Command {
       }
     });
 
-  // 12. git <action>
+  // 13. git
   program
     .command('git <action>')
     .description('Manage hub git repository (status | init)')
@@ -499,7 +618,7 @@ export function buildCli(): Command {
       }
     });
 
-  // 13. push
+  // 14. push
   program
     .command('push')
     .description('Commit and push hub configurations to git remote')
@@ -518,7 +637,7 @@ export function buildCli(): Command {
       }
     });
 
-  // 14. pull
+  // 15. pull
   program
     .command('pull')
     .description('Pull changes from git remote and reproject rules')
@@ -537,7 +656,7 @@ export function buildCli(): Command {
       }
     });
 
-  // 15. info
+  // 16. info
   program
     .command('info <target>')
     .description('Inspect and display security analysis, token footprint, and metadata for a package')
@@ -613,7 +732,7 @@ export function buildCli(): Command {
       }
     });
 
-  // 16. add
+  // 17. add
   program
     .command('add <target>')
     .description('Install an agent package or addon into the hub')
@@ -696,7 +815,7 @@ export function buildCli(): Command {
       }
     });
 
-  // 17. profile
+  // 18. profile
   program
     .command('profile [action] [target]')
     .description('Manage AgentHub environment profiles')
@@ -801,7 +920,7 @@ export function buildCli(): Command {
       }
     });
 
-  // 18. share
+  // 19. share
   program
     .command('share')
     .description('Audit, push, and generate share commands for hub setup')
@@ -871,7 +990,7 @@ export function buildCli(): Command {
       }
     });
 
-  // 19. search
+  // 20. search
   program
     .command('search [query]')
     .description('Search the AgentHub registry for profiles and addons')
@@ -935,7 +1054,7 @@ export function buildCli(): Command {
       }
     });
 
-  // 20. uninstall
+  // 21. uninstall
   program
     .command('uninstall')
     .description('Rollback assistant rules and junctions to original state, and optionally remove hub')
