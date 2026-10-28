@@ -123,6 +123,14 @@ agenthub promote common.md
 
 In a subagent template (`~/.agenthub/agents/*.md`), text between `<!-- claude-only -->` and `<!-- /claude-only -->` lines goes only to the Claude Code agent (`~/.claude/agents/`); the Antigravity copy (`~/.gemini/config/agents/`) leaves it out. Both copies drop the marker lines. Put each marker on its own line, unindented, and don't nest blocks; `agenthub project` warns about a malformed block.
 
+Three frontmatter keys apply to the Claude Code agent only (the Antigravity copy ignores them): `claude_model` and `claude_tools` replace the model and tool list that `tier` and `mode` would give, and `permissionMode` is copied as is. Write `claude_tools` as one comma-separated string:
+
+```yaml
+claude_model: haiku
+claude_tools: Bash, Read, Edit, Write, Grep, Glob, mcp__codegraph__codegraph_explore
+permissionMode: auto
+```
+
 ### 2. Bidirectional MCP Server Synchronization
 
 Manage Model Context Protocol (MCP) servers centrally in `~/.agenthub/mcp/servers.json` and sync with `~/.claude.json`, `~/.gemini/config/mcp_config.json`, and `~/.gemini/settings.json`:

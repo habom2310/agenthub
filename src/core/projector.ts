@@ -439,11 +439,11 @@ export function projectSubagents(
     safeWriteFile(path.join(geminiAgentsDir, `${name}.md`), agyContent);
 
     // 2. Claude subagent
-    const claudeModel = tier === 'fast' || tier === 'inherit' ? 'haiku' : 'sonnet';
+    // claude_model / claude_tools override the tier and mode defaults.
+    const claudeModel = meta.claude_model || (tier === 'fast' || tier === 'inherit' ? 'haiku' : 'sonnet');
     const claudeTools =
-      mode === 'read-write'
-        ? 'Bash, Read, Edit, Write, Glob, Grep'
-        : 'Bash, Read, Glob, Grep';
+      meta.claude_tools ||
+      (mode === 'read-write' ? 'Bash, Read, Edit, Write, Glob, Grep' : 'Bash, Read, Glob, Grep');
 
     const claudeFm: string[] = [
       '---',
@@ -451,6 +451,7 @@ export function projectSubagents(
       `description: ${desc}`,
       `model: ${claudeModel}`,
       `effort: ${effort}`,
+      ...(meta.permissionMode ? [`permissionMode: ${meta.permissionMode}`] : []),
       `tools: ${claudeTools}`,
       '---',
     ];
