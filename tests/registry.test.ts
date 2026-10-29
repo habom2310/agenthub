@@ -5,6 +5,7 @@ import {
   searchRegistry,
   publishToRegistry,
   buildPackagePayload,
+  checkTokenRegistryUrl,
   type RegistryPackageSummary,
 } from '../src/core/registry.js';
 import fs from 'node:fs';
@@ -12,17 +13,33 @@ import os from 'node:os';
 import path from 'node:path';
 import { ensureDir, safeWriteFile } from '../src/utils/fs.js';
 
+describe('checkTokenRegistryUrl', () => {
+  it('allows https and loopback http only', () => {
+    for (const ok of ['https://a.example.com', 'http://localhost:1', 'http://127.0.0.1:8', 'http://[::1]:8']) {
+      expect(checkTokenRegistryUrl(ok)).toBeUndefined();
+    }
+    for (const bad of ['http://a.example.com', 'http://localhost.evil.com', 'ftp://x', 'not a url']) {
+      expect(checkTokenRegistryUrl(bad)).toBeTruthy();
+    }
+  });
+
+  it('publishToRegistry refuses an insecure registry without calling fetch', async () => {
+    const f = vi.spyOn(globalThis, 'fetch');
+    const r = await publishToRegistry({}, { registryUrl: 'http://evil.example.com', token: 't' });
+    expect(r.success).toBe(false);
+    expect(f).not.toHaveBeenCalled();
+  });
+});
+
 describe('Registry Core Module', () => {
   const originalFetch = globalThis.fetch;
   const originalEnv = process.env.AGENTHUB_REGISTRY_URL;
   const originalToken = process.env.AGENTHUB_TOKEN;
-  const originalSecret = process.env.AGENTHUB_PUBLISH_SECRET;
 
   beforeEach(() => {
     vi.restoreAllMocks();
     delete process.env.AGENTHUB_REGISTRY_URL;
     delete process.env.AGENTHUB_TOKEN;
-    delete process.env.AGENTHUB_PUBLISH_SECRET;
   });
 
   afterEach(() => {
@@ -37,16 +54,11 @@ describe('Registry Core Module', () => {
     } else {
       delete process.env.AGENTHUB_TOKEN;
     }
-    if (originalSecret !== undefined) {
-      process.env.AGENTHUB_PUBLISH_SECRET = originalSecret;
-    } else {
-      delete process.env.AGENTHUB_PUBLISH_SECRET;
-    }
   });
 
   describe('getDefaultRegistryUrl', () => {
     it('returns default URL when environment variable is not set', () => {
-      expect(getDefaultRegistryUrl()).toBe('https://agenthub.dev');
+      expect(getDefaultRegistryUrl()).toBe('https://agenthub-web.habom2310.workers.dev');
     });
 
     it('returns custom URL from AGENTHUB_REGISTRY_URL when set', () => {
@@ -96,7 +108,7 @@ describe('Registry Core Module', () => {
 
       expect(globalThis.fetch).toHaveBeenCalledTimes(1);
       const [calledUrl] = (globalThis.fetch as any).mock.calls[0];
-      expect(calledUrl).toContain('https://agenthub.dev/api/packages');
+      expect(calledUrl).toContain('https://agenthub-web.habom2310.workers.dev/api/packages');
       expect(calledUrl).toContain('q=nextjs');
     });
 
@@ -255,23 +267,16 @@ describe('Registry Core Module', () => {
       expect(calledInit.headers['Authorization']).toBe('Bearer env-secret-token');
     });
 
-    it('attaches Authorization: Bearer <token> when AGENTHUB_PUBLISH_SECRET env var is present', async () => {
-      process.env.AGENTHUB_PUBLISH_SECRET = 'publish-secret-token';
+    it('ignores the legacy AGENTHUB_PUBLISH_SECRET env var', async () => {
+      process.env.AGENTHUB_PUBLISH_SECRET = 'legacy-secret';
 
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        status: 201,
-        json: async () => ({
-          message: 'Package indexed successfully',
-          package: { id: 'alice/test' },
-        }),
-      } as Response);
+      globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 201, json: async () => ({}) } as Response);
 
       await publishToRegistry({ name: 'test' });
 
-      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
       const [, calledInit] = (globalThis.fetch as any).mock.calls[0];
-      expect(calledInit.headers['Authorization']).toBe('Bearer publish-secret-token');
+      expect(calledInit.headers['Authorization']).toBeUndefined();
+      delete process.env.AGENTHUB_PUBLISH_SECRET;
     });
 
     it('options.token overrides process.env.AGENTHUB_TOKEN when both are present', async () => {

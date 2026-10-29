@@ -205,6 +205,28 @@ agenthub share -m "Update team engineering rules"
 agenthub share --publish
 ```
 
+Publishing is done as your GitHub account:
+
+1. Run `agenthub login` once.
+   It prints a code and a GitHub URL (device flow); approve it in the browser.
+   The token is stored in `~/.config/agenthub/auth.json` (mode 0600, outside the hub, per registry).
+2. The hub's `origin` remote must be a **public GitHub repo** you can push to.
+3. Run `agenthub share --publish`.
+   It fails fast, before pushing, if you are not logged in or the remote is not on GitHub.
+
+```bash
+agenthub login [--force]          # log in with GitHub
+agenthub whoami                   # show @login, exit 1 if not logged in
+agenthub logout                   # forget the stored login
+agenthub unpublish owner/repo     # remove a package (needs push access)
+```
+
+For CI, set `AGENTHUB_TOKEN` to the token issued by `agenthub login` (for example copied from `auth.json`).
+The registry rejects tokens it did not issue, so a GitHub personal access token will not work.
+Treat it as a secret; prefer the env var over `--token`, which is visible in the process list.
+Tokens are only sent over https (or http to localhost).
+Token order: `--token`, then `AGENTHUB_TOKEN`, then the stored login.
+
 ### 7. Boot Token Budget Auditor
 
 Measure the minimal context footprint of your core rules and skill descriptions against the recommended 2,000-token boot target:
@@ -277,7 +299,11 @@ npm uninstall -g @habom2310/agenthub
 | `agenthub info <target>` | Inspect package metadata, security analysis, scripts, and token footprint |
 | `agenthub add <target>` | Install an agent package, profile, or addon into the hub |
 | `agenthub profile [list\|create\|use]` | List, create, or switch between isolated configuration profiles |
-| `agenthub share [--publish]` | Audit, push, and publish hub configurations to Git remote or registry |
+| `agenthub share [--publish]` | Audit, push, and publish hub configurations to Git remote or registry (needs `login`) |
+| `agenthub login [--force]` | Log in to the registry with your GitHub account (device flow) |
+| `agenthub logout` | Remove the stored registry login |
+| `agenthub whoami` | Show the GitHub account you are logged in as |
+| `agenthub unpublish <owner/repo>` | Remove a package you can push to from the registry |
 | `agenthub project [--no-imports]` | Compile and project unified rules and subagents to configured platforms |
 | `agenthub diff [-p <platform>]` | Detect drift between hub rules and downstream platforms |
 | `agenthub promote [file]` | Promote downstream rule edits back into central hub |
@@ -297,7 +323,9 @@ npm uninstall -g @habom2310/agenthub
 
 - `AGENTHUB_HOME`: Override the default user home directory.
 - `AGENTHUB_HUB`: Override the default hub directory (default: `~/.agenthub`).
-- `AGENTHUB_REGISTRY_URL`: Override the AgentHub package registry URL (default: official registry).
+- `AGENTHUB_REGISTRY_URL`: Override the AgentHub package registry URL (default: `https://agenthub-web.habom2310.workers.dev`). Also settable per command with `--registry`.
+- `AGENTHUB_TOKEN`: GitHub token for `share --publish`, `whoami` and `unpublish` (overrides the stored login; use in CI).
+- `XDG_CONFIG_HOME`: Base for the credential file (`$XDG_CONFIG_HOME/agenthub/auth.json`).
 
 ---
 

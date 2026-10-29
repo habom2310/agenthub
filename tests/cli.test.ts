@@ -833,7 +833,9 @@ describe('CLI Integration', () => {
     await cli.parseAsync(['-H', sandbox, 'init'], { from: 'user' });
 
     // 2. Configure a bare remote
-    const bareRemote = path.join(sandbox, 'publish-remote.git');
+    // Forward slashes so the path reads as a github.com remote on Windows too
+    const bareRemote = path.join(sandbox, 'github.com', 'alice', 'my-agent.git').replace(/\\/g, '/');
+    fs.mkdirSync(path.dirname(bareRemote), { recursive: true });
     spawnSync('git', ['init', '--bare', bareRemote]);
 
     const hubDir = path.join(sandbox, '.agenthub');
@@ -853,7 +855,7 @@ describe('CLI Integration', () => {
 
       logs = [];
       errors = [];
-      await runCli(['-H', sandbox, 'share', '--publish', '-m', 'Publish test']);
+      await runCli(['-H', sandbox, 'share', '--publish', '--token', 'tok', '-m', 'Publish test']);
       const output = stripAnsi(logs.join('\n'));
 
       expect(output).toContain('Ready to share');
@@ -871,7 +873,9 @@ describe('CLI Integration', () => {
     await cli.parseAsync(['-H', sandbox, 'init'], { from: 'user' });
 
     // 2. Configure a bare remote
-    const bareRemote = path.join(sandbox, 'publish-token-remote.git');
+    // Forward slashes so the path reads as a github.com remote on Windows too
+    const bareRemote = path.join(sandbox, 'github.com', 'alice', 'my-agent.git').replace(/\\/g, '/');
+    fs.mkdirSync(path.dirname(bareRemote), { recursive: true });
     spawnSync('git', ['init', '--bare', bareRemote]);
 
     const hubDir = path.join(sandbox, '.agenthub');
@@ -910,7 +914,9 @@ describe('CLI Integration', () => {
     await cli.parseAsync(['-H', sandbox, 'init'], { from: 'user' });
 
     // 2. Configure a bare remote
-    const bareRemote = path.join(sandbox, 'publish-fail-remote.git');
+    // Forward slashes so the path reads as a github.com remote on Windows too
+    const bareRemote = path.join(sandbox, 'github.com', 'alice', 'my-agent.git').replace(/\\/g, '/');
+    fs.mkdirSync(path.dirname(bareRemote), { recursive: true });
     spawnSync('git', ['init', '--bare', bareRemote]);
 
     const hubDir = path.join(sandbox, '.agenthub');
@@ -928,7 +934,7 @@ describe('CLI Integration', () => {
 
       logs = [];
       errors = [];
-      await runCli(['-H', sandbox, 'share', '--publish', '-m', 'Publish unauthorized test']);
+      await runCli(['-H', sandbox, 'share', '--publish', '--token', 'tok', '-m', 'Publish unauthorized test']);
       const errOutput = stripAnsi(errors.join('\n'));
 
       expect(process.exitCode).toBe(1);

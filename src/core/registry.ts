@@ -6,7 +6,7 @@ import { extractRepoShorthand } from './share.js';
 import { auditTokenBudget, estimateTokens } from './token-budget.js';
 import { parseFrontmatter } from './projector.js';
 
-export const DEFAULT_REGISTRY_URL = 'https://agenthub.dev';
+export const DEFAULT_REGISTRY_URL = 'https://agenthub-web.habom2310.workers.dev';
 
 export function getDefaultRegistryUrl(): string {
   return process.env.AGENTHUB_REGISTRY_URL || DEFAULT_REGISTRY_URL;
@@ -52,13 +52,31 @@ export interface PublishToRegistryOptions {
 
 export interface PublishToRegistryResult {
   success: boolean;
+  status?: number;
   package?: RegistryPackageSummary;
   error?: string;
 }
 
-function getCleanBaseUrl(overrideUrl?: string): string {
+export function getCleanBaseUrl(overrideUrl?: string): string {
   const url = overrideUrl || process.env.AGENTHUB_REGISTRY_URL || DEFAULT_REGISTRY_URL;
   return url.replace(/\/+$/, '');
+}
+
+/**
+ * Tokens may only be sent over https, or http to a loopback host.
+ * Returns an error message, or undefined when the URL is acceptable.
+ */
+export function checkTokenRegistryUrl(registryUrl?: string): string | undefined {
+  const base = getCleanBaseUrl(registryUrl);
+  let url: URL;
+  try {
+    url = new URL(base);
+  } catch {
+    return `Invalid registry URL: ${base}`;
+  }
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if (url.protocol === 'https:' || (url.protocol === 'http:' && loopback)) return undefined;
+  return `Refusing to send a token to ${base}: the registry URL must use https (http is only allowed for localhost).`;
 }
 
 /**
@@ -181,11 +199,13 @@ export async function publishToRegistry(
   payload: Record<string, unknown>,
   options?: PublishToRegistryOptions
 ): Promise<PublishToRegistryResult> {
+  const urlError = checkTokenRegistryUrl(options?.registryUrl);
+  if (urlError) return { success: false, error: urlError };
   try {
     const baseUrl = getCleanBaseUrl(options?.registryUrl);
     const url = `${baseUrl}/api/index`;
 
-    const rawToken = options?.token || process.env.AGENTHUB_TOKEN || process.env.AGENTHUB_PUBLISH_SECRET;
+    const rawToken = options?.token || process.env.AGENTHUB_TOKEN;
     const token = rawToken?.trim();
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -211,6 +231,7 @@ export async function publishToRegistry(
       } catch {}
       return {
         success: false,
+        status: res.status,
         error: errMsg,
       };
     }
@@ -226,6 +247,119 @@ export async function publishToRegistry(
       error: err?.message || String(err),
     };
   }
+}
+
+export interface RegistryUser {
+  login: string;
+  id?: number;
+  name?: string | null;
+  avatarUrl?: string;
+}
+
+export interface RegistryCallResult<T> {
+  success: boolean;
+  status?: number;
+  data?: T;
+  error?: string;
+}
+
+/**
+ * Calls a registry endpoint and normalizes failures into readable `error` strings.
+ */
+async function registryCall<T>(
+  registryUrl: string | undefined,
+  apiPath: string,
+  method: string,
+  token?: string
+): Promise<RegistryCallResult<T>> {
+  const urlError = checkTokenRegistryUrl(registryUrl);
+  if (urlError) return { success: false, error: urlError };
+  const baseUrl = getCleanBaseUrl(registryUrl);
+  try {
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (token?.trim()) headers['Authorization'] = `Bearer ${token.trim()}`;
+    const res = await fetch(`${baseUrl}${apiPath}`, {
+      method,
+      headers,
+      signal: AbortSignal.timeout(10000),
+    });
+    const text = await res.text().catch(() => '');
+    let data: any;
+    try {
+      data = text ? JSON.parse(text) : undefined;
+    } catch {}
+    if (!res.ok) {
+      return {
+        success: false,
+        status: res.status,
+        error: data?.error || `Registry request failed: ${res.status} ${res.statusText}`,
+      };
+    }
+    return { success: true, status: res.status, data };
+  } catch (err: any) {
+    const reason = err?.cause?.code || err?.cause?.message || err?.message || String(err);
+    return { success: false, error: `Could not reach registry at ${baseUrl} (${reason})` };
+  }
+}
+
+async function registryCallRequiring<T>(
+  registryUrl: string | undefined,
+  apiPath: string,
+  token: string | undefined,
+  field: keyof T & string,
+  invalidMessage: string
+): Promise<RegistryCallResult<T>> {
+  const res = await registryCall<T>(registryUrl, apiPath, 'GET', token);
+  if (res.success && !res.data?.[field]) {
+    return { success: false, status: res.status, error: invalidMessage };
+  }
+  return res;
+}
+
+/**
+ * Fetches the GitHub OAuth client id the registry uses for device login.
+ */
+export function fetchAuthConfig(registryUrl?: string): Promise<RegistryCallResult<{ githubClientId: string }>> {
+  return registryCallRequiring(
+    registryUrl,
+    '/api/auth/config',
+    undefined,
+    'githubClientId',
+    'Registry returned no GitHub client id'
+  );
+}
+
+/**
+ * Returns the GitHub identity the registry associates with a token.
+ */
+export function whoami(token: string, registryUrl?: string): Promise<RegistryCallResult<RegistryUser>> {
+  return registryCallRequiring(
+    registryUrl,
+    '/api/auth/whoami',
+    token,
+    'login',
+    'Registry returned an invalid identity'
+  );
+}
+
+/**
+ * Removes a package from the registry (requires push access to the repo).
+ */
+export async function unpublishFromRegistry(
+  packageId: string,
+  token: string,
+  registryUrl?: string
+): Promise<RegistryCallResult<{ message?: string }>> {
+  const [owner, repo, ...rest] = packageId.split('/');
+  if (!owner || !repo || rest.length > 0) {
+    return { success: false, error: `Invalid package "${packageId}". Expected owner/repo.` };
+  }
+  return registryCall(
+    registryUrl,
+    `/api/packages/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+    'DELETE',
+    token
+  );
 }
 
 const MCP_STATUS = { LOW: 'verified', MEDIUM: 'needs-review', HIGH: 'warning' } as const;
