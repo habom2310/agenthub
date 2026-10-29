@@ -114,7 +114,8 @@ function isServerObject(value: unknown): value is McpServerConfig {
 
 // A missing type (stdio for a command, http for a url) and client-only keys the
 // hub drops on ingest, like alwaysLoad, don't change how a server runs, so they
-// don't count as drift.
+// don't count as drift. Other client keys (e.g. disabled) still do. Used for
+// Gemini too, which relies on adaptServerForGemini filling type the same way.
 function serversEquivalent(a: unknown, b: unknown): boolean {
   if (!isServerObject(a) || !isServerObject(b)) return deepEqual(a, b);
   const comparable = (cfg: McpServerConfig) => adaptServerForClaude('', normalizeServerForHub('', cfg));

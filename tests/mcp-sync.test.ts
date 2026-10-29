@@ -509,6 +509,26 @@ describe('mcp-sync', () => {
       }
     );
 
+    it('detects drift for a url server with sse type when the hub has no type', () => {
+      safeWriteFile(
+        path.join(hubDir, 'mcp', 'servers.json'),
+        JSON.stringify({ mcpServers: { remote: { url: 'https://example.test/mcp' } } })
+      );
+      safeWriteFile(
+        path.join(homeDir, '.claude.json'),
+        JSON.stringify({
+          mcpServers: { remote: { type: 'sse', url: 'https://example.test/mcp' } },
+        })
+      );
+
+      expect(getMcpStatus(homeDir, hubDir).drifted_in_claude).toEqual(['remote']);
+      syncMcpServers(homeDir, hubDir);
+      const claudeData = JSON.parse(
+        fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf-8')
+      );
+      expect(claudeData.mcpServers.remote.type).toBe('http');
+    });
+
     it('still detects env and url differences', () => {
       safeWriteFile(
         path.join(hubDir, 'mcp', 'servers.json'),
