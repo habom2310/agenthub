@@ -833,7 +833,8 @@ describe('CLI Integration', () => {
     await cli.parseAsync(['-H', sandbox, 'init'], { from: 'user' });
 
     // 2. Configure a bare remote
-    const bareRemote = path.join(sandbox, 'github.com', 'alice', 'my-agent.git');
+    // Forward slashes so the path reads as a github.com remote on Windows too
+    const bareRemote = path.join(sandbox, 'github.com', 'alice', 'my-agent.git').replace(/\\/g, '/');
     fs.mkdirSync(path.dirname(bareRemote), { recursive: true });
     spawnSync('git', ['init', '--bare', bareRemote]);
 
@@ -872,7 +873,8 @@ describe('CLI Integration', () => {
     await cli.parseAsync(['-H', sandbox, 'init'], { from: 'user' });
 
     // 2. Configure a bare remote
-    const bareRemote = path.join(sandbox, 'github.com', 'alice', 'my-agent.git');
+    // Forward slashes so the path reads as a github.com remote on Windows too
+    const bareRemote = path.join(sandbox, 'github.com', 'alice', 'my-agent.git').replace(/\\/g, '/');
     fs.mkdirSync(path.dirname(bareRemote), { recursive: true });
     spawnSync('git', ['init', '--bare', bareRemote]);
 
@@ -912,7 +914,8 @@ describe('CLI Integration', () => {
     await cli.parseAsync(['-H', sandbox, 'init'], { from: 'user' });
 
     // 2. Configure a bare remote
-    const bareRemote = path.join(sandbox, 'github.com', 'alice', 'my-agent.git');
+    // Forward slashes so the path reads as a github.com remote on Windows too
+    const bareRemote = path.join(sandbox, 'github.com', 'alice', 'my-agent.git').replace(/\\/g, '/');
     fs.mkdirSync(path.dirname(bareRemote), { recursive: true });
     spawnSync('git', ['init', '--bare', bareRemote]);
 
