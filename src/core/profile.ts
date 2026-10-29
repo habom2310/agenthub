@@ -35,6 +35,39 @@ export interface ProfileUseResult {
 
 const MANAGED_HUB_ITEMS = ['rules', 'skills', 'mcp', 'agents', 'agenthub.json'];
 
+// Only these agenthub.json keys belong to a profile; the rest (platforms, links, ...) is per-machine hub state
+const PACKAGE_MANIFEST_FIELDS = ['name', 'description', 'type', 'tags', 'license', 'version'];
+
+function readJsonObject(file: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Takes the package fields from the profile's agenthub.json and keeps everything else from the hub's own. */
+function applyProfileManifest(hubManifest: string, profileManifest: string): void {
+  if (!fs.existsSync(hubManifest) && !fs.existsSync(profileManifest)) {
+    return;
+  }
+  const merged = fs.existsSync(hubManifest) ? readJsonObject(hubManifest) : {};
+  const profile = fs.existsSync(profileManifest) ? readJsonObject(profileManifest) : {};
+  // An unreadable manifest on either side leaves the hub's file as it is rather than dropping its contents
+  if (!merged || !profile) {
+    return;
+  }
+  for (const field of PACKAGE_MANIFEST_FIELDS) {
+    if (field in profile) {
+      merged[field] = profile[field];
+    } else {
+      delete merged[field];
+    }
+  }
+  safeWriteFile(hubManifest, JSON.stringify(merged, null, 2) + '\n');
+}
+
 function snapshotHubToProfile(hub: string, profileName: string): void {
   const profileDir = path.join(hub, 'profiles', profileName);
   ensureDir(profileDir);
@@ -56,6 +89,11 @@ function applyProfileToHub(hub: string, profileDir: string): void {
   for (const item of MANAGED_HUB_ITEMS) {
     const hubItem = path.join(hub, item);
     const profileItem = path.join(profileDir, item);
+
+    if (item === 'agenthub.json') {
+      applyProfileManifest(hubItem, profileItem);
+      continue;
+    }
 
     if (fs.existsSync(hubItem)) {
       fs.rmSync(hubItem, { recursive: true, force: true });

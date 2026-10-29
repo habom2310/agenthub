@@ -189,6 +189,99 @@ describe('profile engine (profileList, profileCreate, profileUse)', () => {
       expect(geminiContent).toContain('Remote Package Universal Rules');
     });
 
+    it('keeps the consumer\'s links and platforms when using a shared package', () => {
+      const manifestPath = path.join(hubDir, 'agenthub.json');
+      const own = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      own.platforms.cursor = { enabled: true, path: path.join(homeDir, 'my-cursor') };
+      own.name = 'my-own-hub';
+      own.description = 'mine';
+      safeWriteFile(manifestPath, JSON.stringify(own, null, 2));
+
+      const fixtureDir = path.join(tmpDir, 'author-pkg');
+      safeWriteFile(
+        path.join(fixtureDir, 'agenthub.json'),
+        JSON.stringify({
+          name: 'author-pkg',
+          version: '2.0.0',
+          type: 'profile',
+          tags: ['typescript'],
+          license: 'Apache-2.0',
+          platforms: { claude: { enabled: false }, cursor: { enabled: false } },
+          links: { skills: '/Users/author/.agenthub/skills' },
+        })
+      );
+      safeWriteFile(path.join(fixtureDir, 'rules.md'), '# Author Rules\n');
+
+      const res = profileUse(fixtureDir, { hubDir, homeDir });
+      expect(res.success).toBe(true);
+
+      const after = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      expect(after.links).toEqual(own.links);
+      expect(after.platforms).toEqual(own.platforms);
+      expect(after.created_at).toBe(own.created_at);
+      expect(after.name).toBe('author-pkg');
+      expect(after.version).toBe('2.0.0');
+      expect(after.type).toBe('profile');
+      expect(after.tags).toEqual(['typescript']);
+      expect(after.license).toBe('Apache-2.0');
+      // the author's package has no description, so the consumer's is not left behind
+      expect(after.description).toBeUndefined();
+    });
+
+    it('keeps the current links and platforms when switching back to a local profile', () => {
+      const manifestPath = path.join(hubDir, 'agenthub.json');
+      const fixtureDir = path.join(tmpDir, 'author-pkg');
+      safeWriteFile(
+        path.join(fixtureDir, 'agenthub.json'),
+        JSON.stringify({ name: 'author-pkg', links: { skills: '/Users/author/.agenthub/skills' } })
+      );
+      safeWriteFile(path.join(fixtureDir, 'rules.md'), '# Author Rules\n');
+      expect(profileUse(fixtureDir, { hubDir, homeDir }).success).toBe(true);
+
+      // machine state changes while on the shared profile (e.g. agenthub connect cursor)
+      const current = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      current.platforms.windsurf = { enabled: true };
+      safeWriteFile(manifestPath, JSON.stringify(current, null, 2));
+
+      expect(profileUse('default', { hubDir, homeDir }).success).toBe(true);
+      const after = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      expect(after.platforms.windsurf).toEqual({ enabled: true });
+      expect(after.links).toEqual(current.links);
+      expect(after.name).toBeUndefined();
+    });
+
+    it('leaves the hub manifest untouched when either manifest cannot be parsed', () => {
+      const manifestPath = path.join(hubDir, 'agenthub.json');
+      const fixtureDir = path.join(tmpDir, 'author-pkg');
+      safeWriteFile(path.join(fixtureDir, 'rules.md'), '# Author Rules\n');
+
+      // broken shared manifest: the consumer's own fields stay
+      const own = fs.readFileSync(manifestPath, 'utf-8');
+      safeWriteFile(path.join(fixtureDir, 'agenthub.json'), '{ not json');
+      expect(profileUse(fixtureDir, { hubDir, homeDir }).success).toBe(true);
+      expect(fs.readFileSync(manifestPath, 'utf-8')).toBe(own);
+
+      // broken hub manifest: not overwritten with only the package fields
+      safeWriteFile(path.join(fixtureDir, 'agenthub.json'), JSON.stringify({ name: 'author-pkg' }));
+      safeWriteFile(manifestPath, '{ corrupt');
+      expect(profileUse(fixtureDir, { hubDir, homeDir }).success).toBe(true);
+      expect(fs.readFileSync(manifestPath, 'utf-8')).toBe('{ corrupt');
+    });
+
+    it('writes only the package fields when the hub has no manifest yet', () => {
+      const manifestPath = path.join(hubDir, 'agenthub.json');
+      fs.rmSync(manifestPath);
+      const fixtureDir = path.join(tmpDir, 'author-pkg');
+      safeWriteFile(
+        path.join(fixtureDir, 'agenthub.json'),
+        JSON.stringify({ name: 'author-pkg', links: { skills: '/Users/author/.agenthub/skills' } })
+      );
+      safeWriteFile(path.join(fixtureDir, 'rules.md'), '# Author Rules\n');
+
+      expect(profileUse(fixtureDir, { hubDir, homeDir }).success).toBe(true);
+      expect(JSON.parse(fs.readFileSync(manifestPath, 'utf-8'))).toEqual({ name: 'author-pkg' });
+    });
+
     it('returns error when target profile does not exist and cannot be resolved', () => {
       const res = profileUse('nonexistent-profile-xyz', { hubDir, homeDir });
       expect(res.success).toBe(false);
