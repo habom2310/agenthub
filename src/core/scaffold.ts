@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureDir, safeWriteFile } from '../utils/fs.js';
+import { ensureDir, getUtcTimestamp, safeWriteFile } from '../utils/fs.js';
 import { getHomeDir, getHubDir } from './detector.js';
 
 export interface ScaffoldOptions {
@@ -37,18 +37,6 @@ export function expandTilde(p: string): string {
     return path.join(getHomeDir(), p.slice(2));
   }
   return p;
-}
-
-function getUtcTimestamp(): string {
-  const now = new Date();
-  const pad = (n: number) => n.toString().padStart(2, '0');
-  const year = now.getUTCFullYear();
-  const month = pad(now.getUTCMonth() + 1);
-  const day = pad(now.getUTCDate());
-  const hours = pad(now.getUTCHours());
-  const mins = pad(now.getUTCMinutes());
-  const secs = pad(now.getUTCSeconds());
-  return `${year}${month}${day}_${hours}${mins}${secs}Z`;
 }
 
 function isDir(p: string): boolean {

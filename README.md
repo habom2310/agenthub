@@ -28,7 +28,7 @@ Set up AgentHub (https://github.com/habom2310/agenthub) on my machine:
 
 1. Check that Node.js 20 or later is installed (`node -v`). If not, stop and tell me.
 2. If `agenthub --version` fails, install it globally: `npm install -g @habom2310/agenthub`. Do not use sudo. If the install fails on permissions, stop and tell me.
-3. Before running `agenthub setup`, tell me what it will change and wait for my OK: it creates the hub at `~/.agenthub` (backing up existing configs), links each detected assistant's skills folder to the hub (an existing folder such as `~/.claude/skills` is copied into the hub and renamed to `skills.old`, replacing any previous `skills.old`), projects shared rules, and syncs MCP servers. It is safe to re-run. Do not add `--force` or `--migrate` unless I ask.
+3. Before running `agenthub setup`, tell me what it will change and wait for my OK: it creates the hub at `~/.agenthub` (backing up existing configs), links each detected assistant's skills folder to the hub (an existing folder such as `~/.claude/skills` is copied into the hub and renamed to `skills.old`, or to a timestamped `skills.old.<YYYYMMDD_HHMMSSZ>` if `skills.old` already exists, so no earlier backup is deleted), projects shared rules, and syncs MCP servers. It is safe to re-run. Do not add `--force` or `--migrate` unless I ask.
 4. If setup reports blockers, show them to me, fix the ones you safely can (such as permissions on my own files), then ask me before running `agenthub doctor --fix`.
 5. Run `agenthub doctor` and confirm that all checks pass.
 
@@ -65,7 +65,7 @@ npx @habom2310/agenthub setup
 
 ## What `agenthub setup` Does Automatically
 1. **Scaffolds** the central `~/.agenthub` directory with starter heuristics, templates, and subagents (while creating a timestamped backup of existing rules and config files such as `CLAUDE.md`, `GEMINI.md`, `AGENTS.md` and `settings.json`).
-2. **Auto-wires all detected assistants**: creates directory junctions for shared skills (`~/.claude/skills`, `~/.gemini/config/skills.json`, `.codex/skills`, etc.), compiles and projects unified markdown rules (`GEMINI.md`, `CLAUDE.md`, `AGENTS.md`, Cursor MDC rules), and synchronizes MCP server definitions. An existing skills folder is copied into the hub and renamed to `skills.old`; a previous `skills.old` is deleted, not backed up.
+2. **Auto-wires all detected assistants**: creates directory junctions for shared skills (`~/.claude/skills`, `~/.gemini/config/skills.json`, `.codex/skills`, etc.), compiles and projects unified markdown rules (`GEMINI.md`, `CLAUDE.md`, `AGENTS.md`, Cursor MDC rules), and synchronizes MCP server definitions. An existing skills folder is copied into the hub and renamed to `skills.old`; if `skills.old` already exists, the new backup goes to a timestamped `skills.old.<YYYYMMDD_HHMMSSZ>` and the earlier one is kept. `agenthub uninstall` restores `skills.old`.
 3. **Validates system health**: verifies all junctions, rule files, and MCP configs.
 
 ### Handling Blockers

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'yaml';
-import { createJunction, ensureDir, safeWriteFile } from '../utils/fs.js';
+import { backupSkillsDir, createJunction, ensureDir, safeWriteFile } from '../utils/fs.js';
 import { getHomeDir, getHubDir } from './detector.js';
 
 export interface LinkResult {
@@ -12,7 +12,7 @@ export interface LinkResult {
 /**
  * Links Claude skills to the central hub skills directory.
  * If Claude skills directory is a real directory (not junction/symlink),
- * migrates any existing skills into hub and renames to skills.old.
+ * migrates any existing skills into hub and renames to skills.old (or a timestamped skills.old.<ts> if that exists).
  */
 export function linkSkillsForClaude(
   homeDir?: string,
@@ -44,11 +44,7 @@ export function linkSkillsForClaude(
         }
       }
 
-      const skillsOld = path.join(path.dirname(claudeSkills), 'skills.old');
-      if (fs.existsSync(skillsOld)) {
-        fs.rmSync(skillsOld, { recursive: true, force: true });
-      }
-      fs.renameSync(claudeSkills, skillsOld);
+      backupSkillsDir(claudeSkills);
     } catch (err) {
       return {
         success: false,
@@ -146,7 +142,7 @@ export function linkSkillsForGemini(
 /**
  * Links Codex skills to the central hub skills directory.
  * If ~/.codex is not a directory, fails gracefully.
- * If codex skills is a real directory, migrates contents and backs up to skills.old.
+ * If codex skills is a real directory, migrates contents and backs up to skills.old (or a timestamped skills.old.<ts> if that exists).
  * On junction creation, projects Codex skill manifests (openai.yaml).
  */
 export function linkSkillsForCodex(
@@ -186,11 +182,7 @@ export function linkSkillsForCodex(
         }
       }
 
-      const skillsOld = path.join(codexDir, 'skills.old');
-      if (fs.existsSync(skillsOld)) {
-        fs.rmSync(skillsOld, { recursive: true, force: true });
-      }
-      fs.renameSync(codexSkills, skillsOld);
+      backupSkillsDir(codexSkills);
     } catch (err) {
       return {
         success: false,
