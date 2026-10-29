@@ -28,8 +28,8 @@ Set up AgentHub (https://github.com/habom2310/agenthub) on my machine:
 
 1. Check that Node.js 20 or later is installed (`node -v`). If not, stop and tell me.
 2. If `agenthub --version` fails, install it globally: `npm install -g @habom2310/agenthub`. Do not use sudo. If the install fails on permissions, stop and tell me.
-3. Run `agenthub setup`. It creates the hub at `~/.agenthub` (backing up existing configs), links each detected assistant's skills folder to the hub (an existing folder such as `~/.claude/skills` is copied into the hub and renamed to `skills.old`, replacing any previous `skills.old`), projects shared rules, and syncs MCP servers. It is safe to re-run. Do not add `--force` or `--migrate` unless I ask.
-4. If setup reports blockers, show them to me, fix the ones you safely can (such as permissions on my own files), then run `agenthub doctor --fix`.
+3. Before running `agenthub setup`, tell me what it will change and wait for my OK: it creates the hub at `~/.agenthub` (backing up existing configs), links each detected assistant's skills folder to the hub (an existing folder such as `~/.claude/skills` is copied into the hub and renamed to `skills.old`, replacing any previous `skills.old`), projects shared rules, and syncs MCP servers. It is safe to re-run. Do not add `--force` or `--migrate` unless I ask.
+4. If setup reports blockers, show them to me, fix the ones you safely can (such as permissions on my own files), then ask me before running `agenthub doctor --fix`.
 5. Run `agenthub doctor` and confirm that all checks pass.
 
 Finish with a short summary: which assistants were wired up, and anything I need to do next.
@@ -47,11 +47,13 @@ pnpm add -g @habom2310/agenthub
 
 # yarn
 yarn global add @habom2310/agenthub
-
-agenthub setup
 ```
 
-`agenthub init` runs the same full setup.
+Then verify and set up:
+```bash
+agenthub --version
+agenthub setup
+```
 
 ### Option 3: Instant Run with `npx` (No Install Required)
 You can run any command on demand without installing:
@@ -76,7 +78,7 @@ npx @habom2310/agenthub setup
   ```
   to verify and complete the repair.
 
-*(Need only the directory scaffold without auto-wiring assistants? Pass `--scaffold-only`: `agenthub init --scaffold-only`).*
+*(`agenthub init` runs the same full setup. Need only the directory scaffold without auto-wiring assistants? Pass `--scaffold-only`: `agenthub init --scaffold-only`).*
 
 ---
 
