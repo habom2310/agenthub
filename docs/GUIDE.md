@@ -2,6 +2,19 @@
 
 Installation, usage and command reference for [AgentHub](../README.md).
 
+## Supported Assistants
+
+| Assistant | Detected at |
+|---|---|
+| Google Antigravity (AGY) | `~/.gemini` |
+| Claude Code | `~/.claude` |
+| OpenAI Codex CLI & ChatGPT | `~/.codex` |
+| Cursor | `~/.cursor` |
+| Windsurf | `~/.codeium/windsurf` / `~/.windsurf` |
+| GitHub Copilot CLI | `copilot` binary on your `PATH` |
+
+---
+
 ## Installation
 
 ### Option 1: Ask Your AI to Set It Up

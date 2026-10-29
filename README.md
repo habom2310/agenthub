@@ -48,9 +48,9 @@ AgentHub gives you a single source of truth at `~/.agenthub`:
 
 - **Write once, project everywhere.** Rules are compiled into each assistant's native format. Skills are linked, not copied, so there is one copy to edit.
 - **Catch drift.** Edited `CLAUDE.md` directly? `agenthub diff` shows it, and `agenthub promote` pulls the change back into the hub.
-- **Sync MCP servers** across assistants without overwriting their auth tokens.
+- **Sync MCP servers** across assistants while keeping each assistant's own keys and tokens.
 - **Version it like code.** The hub is a Git repo: history, rollback, and `agenthub push` / `agenthub pull` across all your machines.
-- **Safe by default.** Setup backs up every file it touches, and `agenthub uninstall` puts everything back.
+- **Safe by default.** Setup backs up your existing configs, and `agenthub uninstall` puts everything back.
 
 ---
 
@@ -68,7 +68,7 @@ AgentHub treats an agent setup as a **package**:
 | `git push` | `agenthub share` |
 | Browse and star repos | `agenthub search` and the [AgentHub registry](https://agenthub-web.habom2310.workers.dev) |
 | `git clone` | `agenthub add <owner>/<repo>` or `agenthub profile use <owner>/<repo>` |
-| Code review before merge | `agenthub info` scans for secrets, risky scripts and token cost before you install |
+| Code review before merge | `agenthub info` and `agenthub add` scan for secrets, risky scripts and token cost before you install |
 
 ```bash
 agenthub search code-review          # find a setup someone else built
@@ -76,11 +76,15 @@ agenthub info alice/review-squad     # check its risk level and token footprint
 agenthub add alice/review-squad      # install it into your hub, for every assistant
 ```
 
-Share yours in two commands:
+Share yours:
 
 ```bash
-agenthub share --publish -m "My TypeScript setup"
+agenthub git init --remote-url https://github.com/you/my-setup.git   # connect your hub to a public GitHub repo
+agenthub login                                                      # sign in with GitHub, once
+agenthub share --publish -m "My TypeScript setup"                   # scan, push and list it on the registry
 ```
+
+The [sharing guide](docs/GUIDE.md#6-sharing--publishing) walks through each step.
 
 ### Built on Git: every setup is just a repo
 
@@ -97,10 +101,10 @@ AgentHub doesn't invent its own storage or sync. **Your hub is a plain Git repos
 
 What this gives you:
 
-- **Your files stay yours.** Your setup lives in your own GitHub repo, not on our servers. The registry stores only the listing (name, description, tags, scan results). If the registry disappears, `agenthub add you/my-setup` still works, because it clones straight from GitHub.
+- **Your files stay yours.** Your GitHub repo is the source of truth. The registry keeps an index for search and preview (metadata, your README, rule text, token counts and scan results), but installs never come from it. If the registry disappears, `agenthub add you/my-setup` still works, because it clones straight from GitHub.
 - **Everything Git already does, for free.** Full history, diffs, blame, branches, rollbacks, forks, pull requests and GitHub's own access control.
 - **Contribute to someone's setup the way you'd contribute to code.** Fork it, improve a rule, open a PR.
-- **Ownership follows the repo.** You can only publish or unpublish a package if you have push access to its GitHub repo. `agenthub login` checks this with your GitHub account.
+- **Ownership follows the repo.** You can only publish or unpublish a package if you have push access to its GitHub repo. The registry checks this against your GitHub login when you publish.
 - **Private works too.** Point `agenthub add` at any Git URL (`https://...` or `git@...`), such as a private team repo. The public registry is optional.
 
 ```bash
