@@ -20,31 +20,23 @@ Supports:
 
 ## Installation
 
-### Option 1: Ask Your AI to Install
+### Option 1: Ask Your AI to Set It Up
 Copy this prompt into Claude Code, Codex, Antigravity, Cursor, or any assistant that can run terminal commands:
 
 ```text
-Install AgentHub (https://github.com/habom2310/agenthub) for me:
+Set up AgentHub (https://github.com/habom2310/agenthub) on my machine:
 
 1. Check that Node.js 20 or later is installed (`node -v`). If not, stop and tell me.
-2. Install it globally: `npm install -g @habom2310/agenthub`. Do not use sudo. If the install fails on permissions, stop and tell me.
-3. Verify: `agenthub --version`
-4. Run `agenthub detect` and show me the hub path and which AI assistants it found.
-5. If `detect` reports the hub status as "Not initialized", run `agenthub init`. If it reports "Active", skip init, and do not run `agenthub init --force` or `--migrate` unless I ask.
-6. Run `agenthub doctor` and summarize the result. Right after a fresh init, warnings about missing skills junctions and rules files are expected. They are normal setup, not an install failure.
-7. Before running `agenthub doctor --fix`, ask me. Explain that it links my assistants' skills folders (such as `~/.claude/skills`) to the hub: existing skills are copied into the hub and the original folder is renamed to `skills.old`, replacing any previous `skills.old`.
+2. If `agenthub --version` fails, install it globally: `npm install -g @habom2310/agenthub`. Do not use sudo. If the install fails on permissions, stop and tell me.
+3. Before running `agenthub setup`, tell me what it will change and wait for my OK: it creates the hub at `~/.agenthub` (backing up existing configs), links each detected assistant's skills folder to the hub (an existing folder such as `~/.claude/skills` is copied into the hub and renamed to `skills.old`, replacing any previous `skills.old`), projects shared rules, and syncs MCP servers. It is safe to re-run. Do not add `--force` or `--migrate` unless I ask.
+4. If setup reports blockers, show them to me, fix the ones you safely can (such as permissions on my own files), then ask me before running `agenthub doctor --fix`.
+5. Run `agenthub doctor` and confirm that all checks pass.
 
-Finish with a short summary of what was installed and anything I need to do next.
+Finish with a short summary: which assistants were wired up, and anything I need to do next.
 ```
 
-### Option 2: Instant Run with `npx` (No Install Required)
-You can run any command on demand without installing:
-```bash
-npx @habom2310/agenthub setup
-```
-
-### Option 3: Global Installation (Recommended)
-Install globally to get the standalone `agenthub` executable in your terminal:
+### Option 2: Global Installation (Recommended)
+Install globally to get the standalone `agenthub` executable in your terminal, then run setup:
 
 ```bash
 # npm
@@ -57,30 +49,26 @@ pnpm add -g @habom2310/agenthub
 yarn global add @habom2310/agenthub
 ```
 
-Verify your installation:
+Then verify and set up:
 ```bash
 agenthub --version
+agenthub setup
+```
+
+### Option 3: Instant Run with `npx` (No Install Required)
+You can run any command on demand without installing:
+```bash
+npx @habom2310/agenthub setup
 ```
 
 ---
 
-## Quickstart (Single-Command Setup)
-
-Set up your entire agent environment with one command:
-
-```bash
-npm install -g @habom2310/agenthub
-agenthub setup
-```
-
-*(You can also use `npx @habom2310/agenthub setup` or `agenthub init` — both run the full automated setup by default).*
-
-### What `agenthub setup` Does Automatically:
+## What `agenthub setup` Does Automatically
 1. **Scaffolds** the central `~/.agenthub` directory with starter heuristics, templates, and subagents (while creating a safe timestamped backup of any pre-existing configurations).
 2. **Auto-wires all detected assistants**: creates directory junctions for shared skills (`~/.claude/skills`, `~/.gemini/config/skills.json`, `.codex/skills`, etc.), compiles and projects unified markdown rules (`GEMINI.md`, `CLAUDE.md`, `AGENTS.md`, Cursor MDC rules), and synchronizes MCP server definitions.
 3. **Validates system health**: verifies all junctions, rule files, and MCP configs.
 
-### Handling Blockers:
+### Handling Blockers
 `agenthub setup` configures everything autonomously and only halts if it encounters an unresolvable blocker (such as an OS file permission error or broken paths). If a blocker is detected:
 - The command outputs the exact blocker details.
 - It directs you to resolve the blocker (e.g. granting directory permissions or repairing paths).
@@ -90,21 +78,7 @@ agenthub setup
   ```
   to verify and complete the repair.
 
-*(Need only the directory scaffold without auto-wiring assistants? Pass `--scaffold-only`: `agenthub init --scaffold-only`).*
-
----
-
-## 🤖 Let AI Set It Up For You
-
-Prefer your AI assistant to handle setup and configuration? Copy and paste this prompt into your assistant of choice (**Claude Code**, **Google Antigravity / AGY**, **OpenAI Codex CLI**, or **Cursor**):
-
-```text
-Please set up AgentHub on my system:
-1. Install `@habom2310/agenthub` globally if not already installed (`npm install -g @habom2310/agenthub`).
-2. Run `agenthub setup` to initialize the hub, link skills, and project rules to all installed AI assistants.
-3. If any blockers are reported, inspect the output and resolve them or run `agenthub doctor --fix`.
-4. Run `agenthub doctor` to confirm that all checks pass.
-```
+*(`agenthub init` runs the same full setup. Need only the directory scaffold without auto-wiring assistants? Pass `--scaffold-only`: `agenthub init --scaffold-only`).*
 
 ---
 
