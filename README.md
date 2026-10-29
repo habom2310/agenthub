@@ -64,8 +64,8 @@ npx @habom2310/agenthub setup
 ---
 
 ## What `agenthub setup` Does Automatically
-1. **Scaffolds** the central `~/.agenthub` directory with starter heuristics, templates, and subagents (while creating a safe timestamped backup of any pre-existing configurations).
-2. **Auto-wires all detected assistants**: creates directory junctions for shared skills (`~/.claude/skills`, `~/.gemini/config/skills.json`, `.codex/skills`, etc.), compiles and projects unified markdown rules (`GEMINI.md`, `CLAUDE.md`, `AGENTS.md`, Cursor MDC rules), and synchronizes MCP server definitions.
+1. **Scaffolds** the central `~/.agenthub` directory with starter heuristics, templates, and subagents (while creating a timestamped backup of existing rules and config files such as `CLAUDE.md`, `GEMINI.md`, `AGENTS.md` and `settings.json`).
+2. **Auto-wires all detected assistants**: creates directory junctions for shared skills (`~/.claude/skills`, `~/.gemini/config/skills.json`, `.codex/skills`, etc.), compiles and projects unified markdown rules (`GEMINI.md`, `CLAUDE.md`, `AGENTS.md`, Cursor MDC rules), and synchronizes MCP server definitions. An existing skills folder is copied into the hub and renamed to `skills.old`; a previous `skills.old` is deleted, not backed up.
 3. **Validates system health**: verifies all junctions, rule files, and MCP configs.
 
 ### Handling Blockers
@@ -78,7 +78,7 @@ npx @habom2310/agenthub setup
   ```
   to verify and complete the repair.
 
-*(`agenthub init` runs the same full setup. Need only the directory scaffold without auto-wiring assistants? Pass `--scaffold-only`: `agenthub init --scaffold-only`).*
+*(Since 0.3.0, `agenthub init` runs the same full setup. Need only the directory scaffold, without auto-wiring assistants or the health check? Pass `--scaffold-only`: `agenthub init --scaffold-only`).*
 
 ---
 
@@ -269,8 +269,8 @@ npm uninstall -g @habom2310/agenthub
 
 | Command | Description |
 |---|---|
-| `agenthub setup` | One-command setup: scaffold hub, auto-wire assistants, and configure MCP |
-| `agenthub init [--migrate <path>] [--scaffold-only]` | Initialize `~/.agenthub` directory structure (runs full setup by default or scaffold-only) |
+| `agenthub setup [--force] [--migrate <path>] [--templates <dir>] [--scaffold-only] [--home <dir>]` | One-command setup: scaffold hub, auto-wire assistants, and configure MCP |
+| `agenthub init [--force] [--migrate <path>] [--templates <dir>] [--scaffold-only] [--home <dir>]` | Initialize `~/.agenthub` directory structure (runs full setup by default or scaffold-only) |
 | `agenthub detect` | Detect installed AI coding assistants and configuration status |
 | `agenthub doctor [--fix]` | Diagnose configuration issues and auto-repair broken junctions/rules |
 | `agenthub search [query]` | Search the AgentHub registry for packages, addons, and profiles |
