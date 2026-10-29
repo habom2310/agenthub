@@ -1,8 +1,12 @@
+<div align="center">
+
 # AgentHub
 
 [![npm version](https://img.shields.io/npm/v/@habom2310/agenthub.svg)](https://www.npmjs.com/package/@habom2310/agenthub)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node: >=20.0.0](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg)](https://nodejs.org/)
+
+</div>
 
 **Your agent setup, versioned, synced and shareable. Write your rules and skills once; every AI coding assistant on your machine uses them.**
 
