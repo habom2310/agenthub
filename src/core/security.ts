@@ -132,6 +132,11 @@ const GITIGNORED: { dir: boolean; regex: RegExp }[] = STANDARD_IGNORE_ENTRIES.ma
 
 const MAX_TEXT_FILE_BYTES = 1024 * 1024;
 
+// Hub content scanned for secrets; other repo files (docs, tests, src) are left alone
+// so third-party packages with example tokens are not flagged
+const SECRET_SCAN_DIRS = ['rules', 'agents', 'skills', 'mcp'];
+const SECRET_SCAN_FILES = ['agenthub.json', 'README.md', 'rules.md', 'servers.json', 'mcp.json'];
+
 export function findMcpConfigFile(packageDir: string): string | null {
   const candidates = [
     path.join(packageDir, 'mcp', 'servers.json'),
@@ -434,7 +439,15 @@ function collectTextFiles(packageDir: string, exclude: Set<string>): string[] {
     }
   }
 
-  walk(packageDir);
+  for (const dir of SECRET_SCAN_DIRS) walk(path.join(packageDir, dir));
+  for (const name of SECRET_SCAN_FILES) {
+    const fullPath = path.join(packageDir, name);
+    try {
+      if (fs.statSync(fullPath).isFile() && !exclude.has(fullPath)) files.push(fullPath);
+    } catch {
+      // missing
+    }
+  }
   return files;
 }
 
@@ -587,7 +600,7 @@ export function analyzePackage(packageDir: string, fallbackName?: string): Packa
   const scriptFiles = collectScriptFiles(packageDir);
   const scripts: ScriptAnalysis[] = scriptFiles.map((sf) => analyzeScript(packageDir, sf));
 
-  // Secrets in the other files that get pushed (rules, agents, MCP config, manifest, README)
+  // Secrets in the other hub files that get pushed (rules, agents, skills, MCP config, manifest, README)
   const secrets: SecretFinding[] = collectTextFiles(packageDir, new Set(scriptFiles)).flatMap((f) =>
     scanFileForSecrets(packageDir, f)
   );

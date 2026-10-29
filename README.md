@@ -233,7 +233,7 @@ Your hub can be pushed to a Git repo so you (or your team) can install it anywhe
    ```
    `share` runs the same scan and stops on hard-coded keys (GitHub, OpenAI/Anthropic `sk-`, AWS, private keys, Bearer tokens) in any hub file it pushes, including `rules/`, `agents/`, `skills/`, `mcp/servers.json`, `agenthub.json` and `README.md`. It also stops on high-risk scripts or MCP servers (shell interpreters, `curl`/`wget`, pipes, destructive commands). Warnings name the file and line, not the key. Fix them, or pass `--force` if you are sure they are safe.
 
-   Files kept out by `.gitignore` (`backups/`, `.env`) are not scanned. The scan only knows these key formats, so still keep other secrets in environment variables, not in hub files.
+   The standard ignored paths that `agenthub git init` writes to `.gitignore` (`backups/`, `.env`, `*.env`, ...) are not scanned; custom `.gitignore` lines are not honoured. The scan only knows these key formats, so still keep other secrets in environment variables, not in hub files.
 
 5. **Push to Git.**
    ```bash

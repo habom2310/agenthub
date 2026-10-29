@@ -224,7 +224,7 @@ describe('security engine (analyzePackage)', () => {
     );
   });
 
-  it('scans agents, agenthub.json and README but skips gitignored backups/ and .env', () => {
+  it('scans agents, skills, agenthub.json and README but skips gitignored and non-hub files', () => {
     const pkgDir = path.join(tmpDir, 'hub-files');
     const aws = 'AKIAABCDEFGHIJKLMNOP';
     safeWriteFile(path.join(pkgDir, 'agents', 'reviewer.md'), `key: ${aws}\n`);
@@ -232,7 +232,9 @@ describe('security engine (analyzePackage)', () => {
     safeWriteFile(path.join(pkgDir, 'README.md'), `# Hub\n${aws}\n`);
     safeWriteFile(path.join(pkgDir, 'backups', 'pre-agenthub-1', 'rules.md'), `${aws}\n`);
     safeWriteFile(path.join(pkgDir, '.env'), `AWS_KEY=${aws}\n`);
-    safeWriteFile(path.join(pkgDir, 'local.env'), `AWS_KEY=${aws}\n`);
+    safeWriteFile(path.join(pkgDir, 'rules', 'local.env'), `AWS_KEY=${aws}\n`);
+    safeWriteFile(path.join(pkgDir, 'skills', 'deploy', 'SKILL.md'), `---\nname: deploy\n---\n${aws}\r\n`);
+    safeWriteFile(path.join(pkgDir, 'docs', 'example.md'), `Authorization: Bearer ${'x'.repeat(24)}\n`);
 
     const report = analyzePackage(pkgDir);
 
@@ -240,6 +242,7 @@ describe('security engine (analyzePackage)', () => {
       'README.md:2',
       'agenthub.json:1',
       'agents/reviewer.md:1',
+      'skills/deploy/SKILL.md:4',
     ]);
   });
 
