@@ -221,7 +221,7 @@ Your hub can be pushed to a Git repo so you (or your team) can install it anywhe
    ```
    - `type` is `profile` (a whole setup) or `addon` (a few rules or skills to add on top of someone else's setup).
    - Leave the existing `platforms` and `links` keys as they are; the hub uses them.
-   - `agenthub.json` is pushed as-is, and `agenthub profile use <you>/<repo>` replaces the user's own `agenthub.json` with yours.
+   - `agenthub.json` is pushed as-is, but `agenthub profile use <you>/<repo>` takes only `name`, `description`, `type`, `tags`, `license` and `version` from it. The user keeps their own `platforms` and `links`.
    - `agenthub init --force` rewrites `agenthub.json` and drops these fields.
    - Missing fields fall back to: name = repo name, type = `profile`, license = `MIT`.
    - A `README.md` in `~/.agenthub` is shown on your package page.
