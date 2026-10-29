@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getEffectiveManifest, type AgentPackageManifest } from './manifest.js';
+import { STANDARD_IGNORE_ENTRIES } from './git-sync.js';
 import { estimateTokens } from './token-budget.js';
 import { parseFrontmatter } from './projector.js';
 
@@ -20,12 +21,19 @@ export interface ScriptAnalysis {
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
 }
 
+export interface SecretFinding {
+  path: string; // relative to packageDir
+  line: number;
+  type: string;
+}
+
 export interface PackageAnalysisReport {
   manifest: AgentPackageManifest;
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
   isClean: boolean;
   mcpServers: McpServerAnalysis[];
   scripts: ScriptAnalysis[];
+  secrets: SecretFinding[]; // hardcoded secrets in non-script text files
   envVarsRequired: string[];
   tokenFootprint: {
     rulesTokens: number;
@@ -105,6 +113,29 @@ const IGNORED_DIRS = new Set([
   'build',
   '.next',
 ]);
+
+const SECRET_PATTERNS: { name: string; pattern: RegExp }[] = [
+  { name: 'GitHub Token', pattern: /ghp_[A-Za-z0-9_]{36}/ },
+  { name: 'OpenAI/Anthropic API Key', pattern: /sk-[A-Za-z0-9]{32,}/ },
+  { name: 'AWS Access Key', pattern: /\bAKIA[0-9A-Z]{16}\b/ },
+  { name: 'Private Key', pattern: /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/ },
+  { name: 'Bearer Token', pattern: /Bearer\s+[A-Za-z0-9_\-\.]{20,}/i },
+];
+
+// Files the hub .gitignore keeps out of the pushed repo (backups/, .env, ...)
+const GITIGNORED: { dir: boolean; regex: RegExp }[] = STANDARD_IGNORE_ENTRIES.map((entry) => {
+  const dir = entry.endsWith('/');
+  const glob = dir ? entry.slice(0, -1) : entry;
+  const source = glob.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return { dir, regex: new RegExp(`^${source}$`) };
+});
+
+const MAX_TEXT_FILE_BYTES = 1024 * 1024;
+
+// Hub content scanned for secrets; other repo files (docs, tests, src) are left alone
+// so third-party packages with example tokens are not flagged
+const SECRET_SCAN_DIRS = ['rules', 'agents', 'skills', 'mcp'];
+const SECRET_SCAN_FILES = ['agenthub.json', 'README.md', 'rules.md', 'servers.json', 'mcp.json'];
 
 export function findMcpConfigFile(packageDir: string): string | null {
   const candidates = [
@@ -351,15 +382,7 @@ function analyzeScript(packageDir: string, filePath: string): ScriptAnalysis {
   }
 
   // 2. Hardcoded secrets / credentials
-  const secretRegexes: { name: string; pattern: RegExp }[] = [
-    { name: 'GitHub Token', pattern: /ghp_[A-Za-z0-9_]{36}/ },
-    { name: 'OpenAI/Anthropic API Key', pattern: /sk-[A-Za-z0-9]{32,}/ },
-    { name: 'AWS Access Key', pattern: /\bAKIA[0-9A-Z]{16}\b/ },
-    { name: 'Private Key', pattern: /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/ },
-    { name: 'Bearer Token', pattern: /Bearer\s+[A-Za-z0-9_\-\.]{20,}/i },
-  ];
-
-  for (const { name, pattern } of secretRegexes) {
+  for (const { name, pattern } of SECRET_PATTERNS) {
     if (pattern.test(content)) {
       warnings.push(`Hardcoded secret/credential detected (${name}) in ${relPath}`);
       riskLevel = 'HIGH';
@@ -388,6 +411,67 @@ function analyzeScript(packageDir: string, filePath: string): ScriptAnalysis {
     warnings,
     riskLevel,
   };
+}
+
+function isGitignored(name: string, isDir: boolean): boolean {
+  return GITIGNORED.some((g) => g.dir === isDir && g.regex.test(name));
+}
+
+function collectTextFiles(packageDir: string, exclude: Set<string>): string[] {
+  const files: string[] = [];
+
+  function walk(currentDir: string): void {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (IGNORED_DIRS.has(entry.name)) continue;
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        if (!isGitignored(entry.name, true)) walk(fullPath);
+      } else if (entry.isFile() && !isGitignored(entry.name, false) && !exclude.has(fullPath)) {
+        files.push(fullPath);
+      }
+    }
+  }
+
+  for (const dir of SECRET_SCAN_DIRS) walk(path.join(packageDir, dir));
+  for (const name of SECRET_SCAN_FILES) {
+    const fullPath = path.join(packageDir, name);
+    try {
+      if (fs.statSync(fullPath).isFile() && !exclude.has(fullPath)) files.push(fullPath);
+    } catch {
+      // missing
+    }
+  }
+  return files;
+}
+
+// Reports file, line and pattern name only, never the matched secret
+function scanFileForSecrets(packageDir: string, filePath: string): SecretFinding[] {
+  let content: string;
+  try {
+    if (fs.statSync(filePath).size > MAX_TEXT_FILE_BYTES) return [];
+    content = fs.readFileSync(filePath, 'utf-8');
+  } catch {
+    return [];
+  }
+  if (content.includes('\0')) return []; // binary
+
+  const relPath = path.relative(packageDir, filePath).replace(/\\/g, '/');
+  const findings: SecretFinding[] = [];
+  content.split(/\r?\n/).forEach((text, i) => {
+    for (const { name, pattern } of SECRET_PATTERNS) {
+      if (pattern.test(text)) {
+        findings.push({ path: relPath, line: i + 1, type: name });
+      }
+    }
+  });
+  return findings;
 }
 
 function calculateTokenFootprint(packageDir: string): {
@@ -516,6 +600,11 @@ export function analyzePackage(packageDir: string, fallbackName?: string): Packa
   const scriptFiles = collectScriptFiles(packageDir);
   const scripts: ScriptAnalysis[] = scriptFiles.map((sf) => analyzeScript(packageDir, sf));
 
+  // Secrets in the other hub files that get pushed (rules, agents, skills, MCP config, manifest, README)
+  const secrets: SecretFinding[] = collectTextFiles(packageDir, new Set(scriptFiles)).flatMap((f) =>
+    scanFileForSecrets(packageDir, f)
+  );
+
   // Required Env Vars
   const envVarsSet = new Set<string>();
   for (const s of mcpServers) {
@@ -543,13 +632,17 @@ export function analyzePackage(packageDir: string, fallbackName?: string): Packa
       warningsSet.add(w);
     }
   }
+  for (const f of secrets) {
+    warningsSet.add(`Hardcoded secret/credential detected (${f.type}) in ${f.path}:${f.line}`);
+  }
   const warnings = Array.from(warningsSet);
 
   // Overall risk assessment
   let riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' = 'LOW';
   if (
     mcpServers.some((s) => s.riskLevel === 'HIGH') ||
-    scripts.some((sc) => sc.riskLevel === 'HIGH')
+    scripts.some((sc) => sc.riskLevel === 'HIGH') ||
+    secrets.length > 0
   ) {
     riskLevel = 'HIGH';
   } else if (
@@ -568,6 +661,7 @@ export function analyzePackage(packageDir: string, fallbackName?: string): Packa
     isClean,
     mcpServers,
     scripts,
+    secrets,
     envVarsRequired,
     tokenFootprint,
     warnings,

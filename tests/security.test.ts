@@ -180,6 +180,72 @@ describe('security engine (analyzePackage)', () => {
     expect(cleanScript!.warnings).toEqual([]);
   });
 
+  it('flags a secret pasted into a rule file with file and line, never the secret', () => {
+    const pkgDir = path.join(tmpDir, 'rule-secret');
+    const key = 'sk-1234567890abcdef1234567890abcdef1234';
+    safeWriteFile(path.join(pkgDir, 'rules', 'team.md'), `# Team Rules\nBe awesome.\nUse key ${key}\n`);
+
+    const report = analyzePackage(pkgDir);
+
+    expect(report.riskLevel).toBe('HIGH');
+    expect(report.isClean).toBe(false);
+    expect(report.secrets).toEqual([{ path: 'rules/team.md', line: 3, type: 'OpenAI/Anthropic API Key' }]);
+    expect(report.warnings).toContain(
+      'Hardcoded secret/credential detected (OpenAI/Anthropic API Key) in rules/team.md:3'
+    );
+    expect(report.warnings.join('\n')).not.toContain(key);
+  });
+
+  it('flags a secret in an MCP server env value', () => {
+    const pkgDir = path.join(tmpDir, 'mcp-secret');
+    safeWriteFile(
+      path.join(pkgDir, 'mcp', 'servers.json'),
+      JSON.stringify(
+        {
+          mcpServers: {
+            github: {
+              command: 'npx',
+              args: ['-y', '@modelcontextprotocol/server-github'],
+              env: { GITHUB_TOKEN: 'ghp_123456789012345678901234567890123456' },
+            },
+          },
+        },
+        null,
+        2
+      )
+    );
+
+    const report = analyzePackage(pkgDir);
+
+    expect(report.riskLevel).toBe('HIGH');
+    expect(report.secrets).toEqual([{ path: 'mcp/servers.json', line: 10, type: 'GitHub Token' }]);
+    expect(report.warnings.some((w) => /secret|credential/i.test(w) && w.includes('mcp/servers.json:10'))).toBe(
+      true
+    );
+  });
+
+  it('scans agents, skills, agenthub.json and README but skips gitignored and non-hub files', () => {
+    const pkgDir = path.join(tmpDir, 'hub-files');
+    const aws = 'AKIAABCDEFGHIJKLMNOP';
+    safeWriteFile(path.join(pkgDir, 'agents', 'reviewer.md'), `key: ${aws}\n`);
+    safeWriteFile(path.join(pkgDir, 'agenthub.json'), JSON.stringify({ name: 'x', token: aws }));
+    safeWriteFile(path.join(pkgDir, 'README.md'), `# Hub\n${aws}\n`);
+    safeWriteFile(path.join(pkgDir, 'backups', 'pre-agenthub-1', 'rules.md'), `${aws}\n`);
+    safeWriteFile(path.join(pkgDir, '.env'), `AWS_KEY=${aws}\n`);
+    safeWriteFile(path.join(pkgDir, 'rules', 'local.env'), `AWS_KEY=${aws}\n`);
+    safeWriteFile(path.join(pkgDir, 'skills', 'deploy', 'SKILL.md'), `---\nname: deploy\n---\n${aws}\r\n`);
+    safeWriteFile(path.join(pkgDir, 'docs', 'example.md'), `Authorization: Bearer ${'x'.repeat(24)}\n`);
+
+    const report = analyzePackage(pkgDir);
+
+    expect(report.secrets.map((f) => `${f.path}:${f.line}`).sort()).toEqual([
+      'README.md:2',
+      'agenthub.json:1',
+      'agents/reviewer.md:1',
+      'skills/deploy/SKILL.md:4',
+    ]);
+  });
+
   it('accurately estimates token footprint across rules and skills', () => {
     const pkgDir = path.join(tmpDir, 'footprint-pkg');
     ensureDir(pkgDir);
