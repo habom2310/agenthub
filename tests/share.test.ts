@@ -79,6 +79,52 @@ describe('share engine (shareSetup & extractRepoShorthand)', () => {
       expect(res.warnings.some((w) => w.includes('Hardcoded secret'))).toBe(true);
     });
 
+    it('blocks sharing when a secret is pasted into a rule file', () => {
+      gitInitHub(hubDir);
+      spawnSync('git', ['remote', 'add', 'origin', 'https://github.com/alice/agent-setup.git'], {
+        cwd: hubDir,
+      });
+      safeWriteFile(
+        path.join(hubDir, 'rules', 'team.md'),
+        '# Team Rules\nAPI key: sk-1234567890abcdef1234567890abcdef1234\n'
+      );
+
+      const res = shareSetup({ hubDir });
+      expect(res.success).toBe(false);
+      expect(res.message).toContain('Security check failed');
+      expect(res.warnings).toContain(
+        'Hardcoded secret/credential detected (OpenAI/Anthropic API Key) in rules/team.md:2'
+      );
+    });
+
+    it('blocks sharing when a secret is in an MCP server env value', () => {
+      gitInitHub(hubDir);
+      spawnSync('git', ['remote', 'add', 'origin', 'https://github.com/alice/agent-setup.git'], {
+        cwd: hubDir,
+      });
+      safeWriteFile(
+        path.join(hubDir, 'mcp', 'servers.json'),
+        JSON.stringify(
+          {
+            mcpServers: {
+              github: {
+                command: 'npx',
+                args: ['-y', '@modelcontextprotocol/server-github'],
+                env: { GITHUB_TOKEN: 'ghp_123456789012345678901234567890123456' },
+              },
+            },
+          },
+          null,
+          2
+        )
+      );
+
+      const res = shareSetup({ hubDir });
+      expect(res.success).toBe(false);
+      expect(res.message).toContain('Security check failed');
+      expect(res.warnings.some((w) => /secret|credential/i.test(w) && w.includes('mcp/servers.json:'))).toBe(true);
+    });
+
     it('allows sharing with --force even if secret or high-risk script is detected', () => {
       // Set up a local bare remote to accept the push
       const bareRemote = path.join(tmpDir, 'remote.git');

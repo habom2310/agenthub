@@ -231,9 +231,9 @@ Your hub can be pushed to a Git repo so you (or your team) can install it anywhe
    agenthub budget            # boot token cost of your rules and skills
    agenthub info ~/.agenthub  # security scan: risk level, scripts, MCP servers
    ```
-   `share` runs the same scan and stops on hard-coded keys in skill or `scripts/` files, or on high-risk scripts or MCP servers (shell interpreters, `curl`/`wget`, pipes, destructive commands). Fix them, or pass `--force` if you are sure they are safe.
+   `share` runs the same scan and stops on hard-coded keys (GitHub, OpenAI/Anthropic `sk-`, AWS, private keys, Bearer tokens) in any hub file it pushes, including `rules/`, `agents/`, `skills/`, `mcp/servers.json`, `agenthub.json` and `README.md`. It also stops on high-risk scripts or MCP servers (shell interpreters, `curl`/`wget`, pipes, destructive commands). Warnings name the file and line, not the key. Fix them, or pass `--force` if you are sure they are safe.
 
-   The scan does not read `rules/` or `mcp/servers.json`. Check those by hand for pasted API keys or tokens before you share; `.env` files are already kept out by `.gitignore`.
+   Files kept out by `.gitignore` (`backups/`, `.env`) are not scanned. The scan only knows these key formats, so still keep other secrets in environment variables, not in hub files.
 
 5. **Push to Git.**
    ```bash
