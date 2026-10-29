@@ -115,12 +115,21 @@ export function getUtcTimestamp(): string {
  * Returns the backup path.
  */
 export function backupSkillsDir(skillsDir: string): string {
+  // lstat, not existsSync: a dangling symlink at a candidate name still counts as taken
+  const taken = (p: string): boolean => {
+    try {
+      fs.lstatSync(p);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   const base = path.join(path.dirname(skillsDir), 'skills.old');
   let backup = base;
-  if (fs.existsSync(backup)) {
+  if (taken(backup)) {
     const stamped = `${base}.${getUtcTimestamp()}`;
     backup = stamped;
-    for (let n = 1; fs.existsSync(backup); n++) {
+    for (let n = 1; taken(backup); n++) {
       backup = `${stamped}-${n}`;
     }
   }
