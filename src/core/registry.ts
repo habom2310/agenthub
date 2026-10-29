@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { getEffectiveManifest } from './manifest.js';
+import { getEffectiveManifest, loadManifest } from './manifest.js';
 import { analyzePackage, findMcpConfigFile, parseMcpServers } from './security.js';
 import { extractRepoShorthand } from './share.js';
 import { auditTokenBudget, estimateTokens } from './token-budget.js';
@@ -228,6 +228,8 @@ export async function publishToRegistry(
   }
 }
 
+const MCP_STATUS = { LOW: 'verified', MEDIUM: 'needs-review', HIGH: 'warning' } as const;
+
 /**
  * Builds package summary payload from a local hub directory for publishing.
  */
@@ -235,8 +237,6 @@ export function buildPackagePayload(
   hubDir: string,
   extra?: { repoShorthand?: string; remoteUrl?: string }
 ): Record<string, unknown> {
-  const manifest = getEffectiveManifest(hubDir);
-
   let owner = '';
   let repo = '';
   if (extra?.repoShorthand) {
@@ -253,7 +253,9 @@ export function buildPackagePayload(
   }
 
   if (!owner) owner = 'community';
-  if (!repo) repo = manifest.name || path.basename(path.resolve(hubDir));
+  if (!repo) repo = loadManifest(hubDir)?.name || path.basename(path.resolve(hubDir));
+  // Without an explicit name, the package is named after its repo, not the hub folder (".agenthub")
+  const manifest = getEffectiveManifest(hubDir, repo);
 
   const readmePath = path.join(hubDir, 'README.md');
   const readme = fs.existsSync(readmePath) ? fs.readFileSync(readmePath, 'utf-8') : '';
@@ -275,24 +277,6 @@ export function buildPackagePayload(
         }
       }
     } catch {}
-  }
-
-  // Collect MCP servers
-  const mcpServers: Array<Record<string, unknown>> = [];
-  const mcpConfigFile = findMcpConfigFile(hubDir);
-  if (mcpConfigFile) {
-    const { servers } = parseMcpServers(mcpConfigFile);
-    for (const [name, srv] of Object.entries(servers)) {
-      const srvObj = srv && typeof srv === 'object' && !Array.isArray(srv) ? (srv as Record<string, any>) : {};
-      mcpServers.push({
-        name,
-        command: typeof srvObj.command === 'string' ? srvObj.command : '',
-        args: Array.isArray(srvObj.args) ? srvObj.args : [],
-        env: srvObj.env && typeof srvObj.env === 'object' ? Object.keys(srvObj.env) : [],
-        risk: 'low',
-        status: 'verified',
-      });
-    }
   }
 
   // Scan rules/ to construct rulesAst
@@ -347,7 +331,20 @@ export function buildPackagePayload(
   }
 
   // Security analysis
-  const analysis = analyzePackage(hubDir, manifest.name || repo);
+  const analysis = analyzePackage(hubDir, manifest.name);
+
+  // MCP servers carry the scan's per-server risk
+  // env sends only the config's key names; the scan also pulls $VAR-like fragments out of values
+  const mcpConfigFile = findMcpConfigFile(hubDir);
+  const mcpConfig = mcpConfigFile ? parseMcpServers(mcpConfigFile).servers : {};
+  const mcpServers = analysis.mcpServers.map((s) => ({
+    name: s.name,
+    command: s.command,
+    args: s.args,
+    env: Object.keys(mcpConfig[s.name]?.env ?? {}),
+    risk: s.riskLevel.toLowerCase(),
+    status: MCP_STATUS[s.riskLevel],
+  }));
 
   // Calculate token footprint
   const budget = auditTokenBudget(hubDir);
