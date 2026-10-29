@@ -52,8 +52,12 @@ function applyProfileManifest(hubManifest: string, profileManifest: string): voi
   if (!fs.existsSync(hubManifest) && !fs.existsSync(profileManifest)) {
     return;
   }
-  const merged = (fs.existsSync(hubManifest) && readJsonObject(hubManifest)) || {};
-  const profile = (fs.existsSync(profileManifest) && readJsonObject(profileManifest)) || {};
+  const merged = fs.existsSync(hubManifest) ? readJsonObject(hubManifest) : {};
+  const profile = fs.existsSync(profileManifest) ? readJsonObject(profileManifest) : {};
+  // An unreadable manifest on either side leaves the hub's file as it is rather than dropping its contents
+  if (!merged || !profile) {
+    return;
+  }
   for (const field of PACKAGE_MANIFEST_FIELDS) {
     if (field in profile) {
       merged[field] = profile[field];

@@ -250,6 +250,38 @@ describe('profile engine (profileList, profileCreate, profileUse)', () => {
       expect(after.name).toBeUndefined();
     });
 
+    it('leaves the hub manifest untouched when either manifest cannot be parsed', () => {
+      const manifestPath = path.join(hubDir, 'agenthub.json');
+      const fixtureDir = path.join(tmpDir, 'author-pkg');
+      safeWriteFile(path.join(fixtureDir, 'rules.md'), '# Author Rules\n');
+
+      // broken shared manifest: the consumer's own fields stay
+      const own = fs.readFileSync(manifestPath, 'utf-8');
+      safeWriteFile(path.join(fixtureDir, 'agenthub.json'), '{ not json');
+      expect(profileUse(fixtureDir, { hubDir, homeDir }).success).toBe(true);
+      expect(fs.readFileSync(manifestPath, 'utf-8')).toBe(own);
+
+      // broken hub manifest: not overwritten with only the package fields
+      safeWriteFile(path.join(fixtureDir, 'agenthub.json'), JSON.stringify({ name: 'author-pkg' }));
+      safeWriteFile(manifestPath, '{ corrupt');
+      expect(profileUse(fixtureDir, { hubDir, homeDir }).success).toBe(true);
+      expect(fs.readFileSync(manifestPath, 'utf-8')).toBe('{ corrupt');
+    });
+
+    it('writes only the package fields when the hub has no manifest yet', () => {
+      const manifestPath = path.join(hubDir, 'agenthub.json');
+      fs.rmSync(manifestPath);
+      const fixtureDir = path.join(tmpDir, 'author-pkg');
+      safeWriteFile(
+        path.join(fixtureDir, 'agenthub.json'),
+        JSON.stringify({ name: 'author-pkg', links: { skills: '/Users/author/.agenthub/skills' } })
+      );
+      safeWriteFile(path.join(fixtureDir, 'rules.md'), '# Author Rules\n');
+
+      expect(profileUse(fixtureDir, { hubDir, homeDir }).success).toBe(true);
+      expect(JSON.parse(fs.readFileSync(manifestPath, 'utf-8'))).toEqual({ name: 'author-pkg' });
+    });
+
     it('returns error when target profile does not exist and cannot be resolved', () => {
       const res = profileUse('nonexistent-profile-xyz', { hubDir, homeDir });
       expect(res.success).toBe(false);
