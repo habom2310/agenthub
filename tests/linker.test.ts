@@ -78,6 +78,39 @@ describe('linker', () => {
       expect(isJunctionOrSymlink(claudeSkills)).toBe(true);
     });
 
+    it('keeps earlier skills.old backups when linking again', () => {
+      const claudeDir = path.join(homeDir, '.claude');
+      const claudeSkills = path.join(claudeDir, 'skills');
+      const relink = (marker: string) => {
+        fs.rmSync(claudeSkills, { recursive: true, force: true });
+        safeWriteFile(path.join(claudeSkills, 'marker.txt'), marker);
+        expect(linkSkillsForClaude(homeDir, hubDir).success).toBe(true);
+      };
+
+      relink('first');
+      relink('second');
+      relink('third');
+
+      // The first backup stays at skills.old, the name uninstall restores
+      expect(
+        fs.readFileSync(path.join(claudeDir, 'skills.old', 'marker.txt'), 'utf-8')
+      ).toBe('first');
+
+      const stamped = fs
+        .readdirSync(claudeDir)
+        .filter((name) => name.startsWith('skills.old.'))
+        .sort();
+      expect(stamped).toHaveLength(2);
+      for (const name of stamped) {
+        expect(name).toMatch(/^skills\.old\.\d{8}_\d{6}Z(-\d+)?$/);
+      }
+      const markers = stamped.map((name) =>
+        fs.readFileSync(path.join(claudeDir, name, 'marker.txt'), 'utf-8')
+      );
+      expect(markers.sort()).toEqual(['second', 'third']);
+      expect(isJunctionOrSymlink(claudeSkills)).toBe(true);
+    });
+
     it('does not overwrite existing hub files during migration', () => {
       const claudeSkills = path.join(homeDir, '.claude', 'skills');
       safeWriteFile(

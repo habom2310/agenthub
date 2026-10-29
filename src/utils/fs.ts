@@ -94,6 +94,50 @@ export function ensureDir(dirPath: string): void {
 }
 
 /**
+ * Returns the current UTC time as YYYYMMDD_HHMMSSZ, used for backup names.
+ */
+export function getUtcTimestamp(): string {
+  const now = new Date();
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  const year = now.getUTCFullYear();
+  const month = pad(now.getUTCMonth() + 1);
+  const day = pad(now.getUTCDate());
+  const hours = pad(now.getUTCHours());
+  const mins = pad(now.getUTCMinutes());
+  const secs = pad(now.getUTCSeconds());
+  return `${year}${month}${day}_${hours}${mins}${secs}Z`;
+}
+
+/**
+ * Renames a real skills directory to a sibling backup without deleting any
+ * earlier backup. Uses skills.old when free (the name uninstall restores),
+ * otherwise skills.old.<YYYYMMDD_HHMMSSZ>, adding -N on a same-second clash.
+ * Returns the backup path.
+ */
+export function backupSkillsDir(skillsDir: string): string {
+  // lstat, not existsSync: a dangling symlink at a candidate name still counts as taken
+  const taken = (p: string): boolean => {
+    try {
+      fs.lstatSync(p);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const base = path.join(path.dirname(skillsDir), 'skills.old');
+  let backup = base;
+  if (taken(backup)) {
+    const stamped = `${base}.${getUtcTimestamp()}`;
+    backup = stamped;
+    for (let n = 1; taken(backup); n++) {
+      backup = `${stamped}-${n}`;
+    }
+  }
+  fs.renameSync(skillsDir, backup);
+  return backup;
+}
+
+/**
  * Safely writes a UTF-8 file, ensuring parent directories exist before writing.
  * Uses atomic sibling write and rename to prevent partial writes.
  */

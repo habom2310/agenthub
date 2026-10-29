@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  backupSkillsDir,
   createJunction,
   ensureDir,
   findExecutable,
@@ -23,6 +24,43 @@ describe('fs utils', () => {
     } catch {
       // ignore cleanup errors
     }
+  });
+
+  describe('backupSkillsDir', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('uses skills.old, then a timestamp, then -N on a same-second clash', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-10-29T08:09:10Z'));
+      const skills = path.join(tmpDir, 'skills');
+
+      const backups = ['a', 'b', 'c'].map((marker) => {
+        safeWriteFile(path.join(skills, 'marker.txt'), marker);
+        return path.basename(backupSkillsDir(skills));
+      });
+
+      expect(backups).toEqual([
+        'skills.old',
+        'skills.old.20261029_080910Z',
+        'skills.old.20261029_080910Z-1',
+      ]);
+      expect(fs.readFileSync(path.join(tmpDir, 'skills.old', 'marker.txt'), 'utf-8')).toBe('a');
+    });
+
+    it('treats a dangling skills.old symlink as taken and leaves it alone', () => {
+      const skills = path.join(tmpDir, 'skills');
+      const skillsOld = path.join(tmpDir, 'skills.old');
+      fs.symlinkSync(path.join(tmpDir, 'missing'), skillsOld, 'junction');
+      safeWriteFile(path.join(skills, 'marker.txt'), 'a');
+
+      const backup = backupSkillsDir(skills);
+
+      expect(path.basename(backup)).toMatch(/^skills\.old\.\d{8}_\d{6}Z$/);
+      expect(fs.lstatSync(skillsOld).isSymbolicLink()).toBe(true);
+      expect(fs.readFileSync(path.join(backup, 'marker.txt'), 'utf-8')).toBe('a');
+    });
   });
 
   describe('ensureDir & safeWriteFile', () => {

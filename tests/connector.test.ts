@@ -209,6 +209,30 @@ describe('connector', () => {
       expect(isJunctionOrSymlink(cursorSkills)).toBe(true);
     });
 
+    it('keeps the first Cursor skills.old when linking a second time', () => {
+      const cursorDir = path.join(homeDir, '.cursor');
+      const cursorSkills = path.join(cursorDir, 'skills');
+      safeWriteFile(path.join(cursorSkills, 'marker.txt'), 'first');
+      expect(connectCursor(cursorDir, homeDir, hubDir).success).toBe(true);
+
+      fs.rmSync(cursorSkills, { recursive: true, force: true });
+      safeWriteFile(path.join(cursorSkills, 'marker.txt'), 'second');
+      expect(connectCursor(cursorDir, homeDir, hubDir).success).toBe(true);
+
+      expect(
+        fs.readFileSync(path.join(cursorDir, 'skills.old', 'marker.txt'), 'utf-8')
+      ).toBe('first');
+      const stamped = fs
+        .readdirSync(cursorDir)
+        .filter((name) => name.startsWith('skills.old.'));
+      expect(stamped).toHaveLength(1);
+      expect(stamped[0]).toMatch(/^skills\.old\.\d{8}_\d{6}Z$/);
+      expect(
+        fs.readFileSync(path.join(cursorDir, stamped[0], 'marker.txt'), 'utf-8')
+      ).toBe('second');
+      expect(isJunctionOrSymlink(cursorSkills)).toBe(true);
+    });
+
     it('migrates pre-existing skills from Windsurf to hub and renames old dir to skills.old', () => {
       const windsurfDir = path.join(homeDir, '.windsurf');
       const windsurfSkills = path.join(windsurfDir, 'skills');

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createJunction, ensureDir, safeWriteFile } from '../utils/fs.js';
+import { backupSkillsDir, createJunction, ensureDir, safeWriteFile } from '../utils/fs.js';
 import { getHomeDir, getHubDir } from './detector.js';
 import {
   linkSkillsForClaude,
@@ -60,7 +60,7 @@ export function updateHubManifest(
 
 /**
  * Connects Cursor to the hub:
- * - Migrates pre-existing skills to hub and renames old dir to skills.old.
+ * - Migrates pre-existing skills to hub and renames old dir to skills.old (or a timestamped skills.old.<ts> if that exists).
  * - Creates a junction from cursor_dir/skills pointing to hubDir/skills.
  * - Projects Cursor rules.
  * - Updates the hub manifest.
@@ -97,11 +97,7 @@ export function connectCursor(
         }
       }
 
-      const skillsOld = path.join(cursor_dir, 'skills.old');
-      if (fs.existsSync(skillsOld)) {
-        fs.rmSync(skillsOld, { recursive: true, force: true });
-      }
-      fs.renameSync(cursorSkills, skillsOld);
+      backupSkillsDir(cursorSkills);
     } catch (err) {
       return {
         success: false,
@@ -139,7 +135,7 @@ export function connectCursor(
 
 /**
  * Connects Windsurf to the hub:
- * - Migrates pre-existing skills to hub and renames old dir to skills.old.
+ * - Migrates pre-existing skills to hub and renames old dir to skills.old (or a timestamped skills.old.<ts> if that exists).
  * - Creates a junction from windsurf_dir/skills pointing to hubDir/skills.
  * - Projects Windsurf rules.
  * - Updates the hub manifest.
@@ -180,11 +176,7 @@ export function connectWindsurf(
         }
       }
 
-      const skillsOld = path.join(windsurf_dir, 'skills.old');
-      if (fs.existsSync(skillsOld)) {
-        fs.rmSync(skillsOld, { recursive: true, force: true });
-      }
-      fs.renameSync(windsurfSkills, skillsOld);
+      backupSkillsDir(windsurfSkills);
     } catch (err) {
       return {
         success: false,
