@@ -39,6 +39,17 @@ import {
   searchRegistry,
   publishToRegistry,
   buildPackagePayload,
+  extractRepoShorthand,
+  getCleanBaseUrl,
+  checkTokenRegistryUrl,
+  fetchAuthConfig,
+  whoami,
+  unpublishFromRegistry,
+  getStoredCredential,
+  saveCredential,
+  deleteCredential,
+  resolveToken,
+  runDeviceFlow,
   type MarkdownChunk,
   type PlatformDriftTarget,
   type ScaffoldResult,
@@ -69,6 +80,19 @@ export function buildCli(): Command {
       setCustomHome(path.resolve(home));
     }
   };
+
+  // Tokens must not travel over plain http or to arbitrary hosts.
+  const registryAllowed = (registryUrl?: string): boolean => {
+    const error = checkTokenRegistryUrl(registryUrl);
+    if (error) {
+      console.error(pc.red(`✗ ${error}`));
+      process.exitCode = 1;
+    }
+    return !error;
+  };
+
+  const withLoginHint = (message: string | undefined, status?: number): string =>
+    status === 401 ? `${message} Run: agenthub login` : `${message}`;
 
   function promptConfirm(question: string): Promise<boolean> {
     const rl = readline.createInterface({
@@ -930,10 +954,26 @@ export function buildCli(): Command {
     .option('-f, --force', 'Force sharing even if security risks or secrets are detected')
     .option('--publish', 'Publish package to AgentHub registry after pushing')
     .option('--registry <url>', 'Override registry URL')
-    .option('--token <token>', 'Registry authentication token for publishing')
+    .option('--token <token>', 'Token from agenthub login (visible in the process list; prefer AGENTHUB_TOKEN or the stored login)')
     .option('-H, --home <dir>', 'Sets custom home directory')
     .action(async (options) => {
       applyHomeOverride(options);
+      let publishToken: string | undefined;
+      if (options.publish) {
+        if (!registryAllowed(options.registry)) return;
+        publishToken = resolveToken(options.registry, options.token);
+        if (!publishToken) {
+          console.error(pc.red('✗ Publishing needs a login. Run: agenthub login'));
+          process.exitCode = 1;
+          return;
+        }
+        const remoteUrl = gitStatus(getHubDir()).remotes?.[options.remote];
+        if (!remoteUrl || !/github\.com/i.test(remoteUrl) || !extractRepoShorthand(remoteUrl)) {
+          console.error(pc.red('✗ Publishing needs a public GitHub remote'));
+          process.exitCode = 1;
+          return;
+        }
+      }
       const res = shareSetup({
         commitMessage: options.message,
         remote: options.remote,
@@ -975,7 +1015,7 @@ export function buildCli(): Command {
 
         const pubResult = await publishToRegistry(payload, {
           registryUrl: options.registry,
-          token: options.token,
+          token: publishToken,
         });
 
         if (pubResult.success) {
@@ -984,7 +1024,7 @@ export function buildCli(): Command {
             (payload.owner ? `${payload.owner}/${payload.repo}` : (payload.name as string));
           console.log(pc.green(`✓ Successfully published and indexed "${pkgId}" in registry!`));
         } else {
-          console.error(pc.red(`✗ Failed to publish to registry: ${pubResult.error}`));
+          console.error(pc.red(`✗ Failed to publish to registry: ${withLoginHint(pubResult.error, pubResult.status)}`));
           process.exitCode = 1;
         }
       }
@@ -1052,6 +1092,109 @@ export function buildCli(): Command {
           pkg.type === 'profile' ? `agenthub profile use ${pkg.id}` : `agenthub add ${pkg.id}`;
         console.log(`  Install: ${pc.cyan(installCmd)}\n`);
       }
+    });
+
+  // 20a. login / logout / whoami / unpublish
+  program
+    .command('login')
+    .description('Log in to the registry with your GitHub account')
+    .option('--registry <url>', 'Override registry URL')
+    .option('--force', 'Log in again even if already logged in')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action(async (options) => {
+      applyHomeOverride(options);
+      if (!registryAllowed(options.registry)) return;
+      const registry = getCleanBaseUrl(options.registry);
+      const existing = getStoredCredential(registry);
+      if (existing && !options.force) {
+        console.log(`Already logged in to ${registry} as @${existing.login}. Use --force to log in again.`);
+        return;
+      }
+      try {
+        const config = await fetchAuthConfig(registry);
+        if (!config.success || !config.data) {
+          throw new Error(config.error || 'Could not load registry login configuration');
+        }
+        const token = await runDeviceFlow({
+          clientId: config.data.githubClientId,
+          onCode: ({ userCode, verificationUri }) => {
+            console.log(`\nOpen ${pc.cyan(verificationUri)} and enter the code: ${pc.bold(userCode)}\n`);
+            console.log(pc.dim('Waiting for authorization...'));
+          },
+        });
+        const who = await whoami(token, registry);
+        if (!who.success || !who.data) {
+          throw new Error(who.error || 'Could not verify login with the registry');
+        }
+        saveCredential(registry, { token, login: who.data.login });
+        console.log(pc.green(`✓ Logged in to ${registry} as @${who.data.login}`));
+      } catch (err: any) {
+        console.error(pc.red(`✗ Login failed: ${err?.message || err}`));
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('logout')
+    .description('Remove the stored registry login')
+    .option('--registry <url>', 'Override registry URL')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action((options) => {
+      applyHomeOverride(options);
+      const registry = getCleanBaseUrl(options.registry);
+      if (deleteCredential(registry)) {
+        console.log(pc.green(`✓ Logged out of ${registry}`));
+      } else {
+        console.log(`Not logged in to ${registry}.`);
+      }
+    });
+
+  program
+    .command('whoami')
+    .description('Show the GitHub account you are logged in as')
+    .option('--registry <url>', 'Override registry URL')
+    .option('--token <token>', 'Token from agenthub login (visible in the process list; prefer AGENTHUB_TOKEN or the stored login)')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action(async (options) => {
+      applyHomeOverride(options);
+      if (!registryAllowed(options.registry)) return;
+      const token = resolveToken(options.registry, options.token);
+      if (!token) {
+        console.error(pc.red('✗ Not logged in. Run agenthub login'));
+        process.exitCode = 1;
+        return;
+      }
+      const res = await whoami(token, options.registry);
+      if (!res.success || !res.data) {
+        console.error(pc.red(`✗ ${withLoginHint(res.error, res.status)}`));
+        process.exitCode = 1;
+        return;
+      }
+      console.log(`@${res.data.login}`);
+    });
+
+  program
+    .command('unpublish <package>')
+    .description('Remove a package (owner/repo) from the registry')
+    .option('--registry <url>', 'Override registry URL')
+    .option('--token <token>', 'Token from agenthub login (visible in the process list; prefer AGENTHUB_TOKEN or the stored login)')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action(async (pkg, options) => {
+      applyHomeOverride(options);
+      if (!registryAllowed(options.registry)) return;
+      const token = resolveToken(options.registry, options.token);
+      if (!token) {
+        console.error(pc.red('✗ Unpublishing needs a login. Run: agenthub login'));
+        process.exitCode = 1;
+        return;
+      }
+      const res = await unpublishFromRegistry(pkg, token, options.registry);
+      if (!res.success) {
+        console.error(pc.red(`✗ ${withLoginHint(res.error, res.status)}`));
+        process.exitCode = 1;
+        return;
+      }
+      console.log(pc.green(`✓ ${res.data?.message || `Unpublished ${pkg}`}`));
     });
 
   // 21. uninstall

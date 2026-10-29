@@ -219,11 +219,31 @@ export {
   searchRegistry,
   publishToRegistry,
   buildPackagePayload,
+  getCleanBaseUrl,
+  checkTokenRegistryUrl,
+  fetchAuthConfig,
+  whoami,
+  unpublishFromRegistry,
+  type RegistryUser,
+  type RegistryCallResult,
   type RegistryPackageSummary,
   type SearchRegistryOptions,
   type SearchRegistryResult,
   type PublishToRegistryOptions,
   type PublishToRegistryResult,
 } from './core/registry.js';
+
+// Core Auth
+export {
+  getAuthFilePath,
+  getStoredCredential,
+  saveCredential,
+  deleteCredential,
+  resolveToken,
+  runDeviceFlow,
+  deviceFlowRuntime,
+  type StoredCredential,
+  type DeviceFlowOptions,
+} from './core/auth.js';
 
 
