@@ -108,6 +108,37 @@ function deepEqual(a: unknown, b: unknown): boolean {
   return true;
 }
 
+function isServerObject(value: unknown): value is McpServerConfig {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// A missing type (stdio for a command, http for a url) and client-only keys the
+// hub drops on ingest, like alwaysLoad, don't change how a server runs, so they
+// don't count as drift. Other client keys (e.g. disabled) still do. Used for
+// Gemini too, which relies on adaptServerForGemini filling type the same way.
+function serversEquivalent(a: unknown, b: unknown): boolean {
+  if (!isServerObject(a) || !isServerObject(b)) return deepEqual(a, b);
+  const comparable = (cfg: McpServerConfig) => adaptServerForClaude('', normalizeServerForHub('', cfg));
+  return deepEqual(comparable(a), comparable(b));
+}
+
+// Keeps the keys of a platform's existing entry when it already matches the hub,
+// so sync fills in a missing type but doesn't strip client keys like alwaysLoad.
+function projectServers(
+  hubServers: Record<string, McpServerConfig>,
+  currentServers: unknown,
+  adapt: (name: string, config: McpServerConfig) => McpServerConfig
+): Record<string, McpServerConfig> {
+  const current = isServerObject(currentServers) ? (currentServers as Record<string, unknown>) : {};
+  const target: Record<string, McpServerConfig> = {};
+  for (const [name, cfg] of Object.entries(hubServers)) {
+    const existing = current[name];
+    const adapted = adapt(name, cfg);
+    target[name] = isServerObject(existing) && serversEquivalent(existing, cfg) ? { ...adapted, ...existing } : adapted;
+  }
+  return target;
+}
+
 export function getMcpStatus(
   homeDirOrOptions?: string | { homeDir?: string; hubDir?: string },
   hubDir?: string
@@ -180,8 +211,7 @@ export function getMcpStatus(
       if (!(name in claudeServers)) {
         missing_in_claude.push(name);
       } else {
-        const expected = adaptServerForClaude(name, hubServers[name]);
-        if (!deepEqual(claudeServers[name], expected)) {
+        if (!serversEquivalent(claudeServers[name], hubServers[name])) {
           drifted_in_claude.push(name);
         }
       }
@@ -202,8 +232,7 @@ export function getMcpStatus(
       if (!(name in geminiServers)) {
         missing_in_gemini.push(name);
       } else {
-        const expected = adaptServerForGemini(name, hubServers[name]);
-        if (!deepEqual(geminiServers[name], expected)) {
+        if (!serversEquivalent(geminiServers[name], hubServers[name])) {
           drifted_in_gemini.push(name);
         }
       }
@@ -360,11 +389,8 @@ export function syncMcpServers(
     if (fs.existsSync(claudeFile) && !claudeRead.success) {
       actions.push('[SKIP] Refusing to overwrite .claude.json: file is corrupt or unparseable');
     } else {
-      const targetClaudeServers: Record<string, McpServerConfig> = {};
-      for (const [name, cfg] of Object.entries(hubServers)) {
-        targetClaudeServers[name] = adaptServerForClaude(name, cfg);
-      }
       const currentClaudeServers = claudeRead.data?.mcpServers;
+      const targetClaudeServers = projectServers(hubServers, currentClaudeServers, adaptServerForClaude);
       if (!deepEqual(currentClaudeServers, targetClaudeServers)) {
         const targetData = { ...claudeRead.data, mcpServers: targetClaudeServers };
         safeWriteFile(claudeFile, JSON.stringify(targetData, null, 2) + '\n');
@@ -375,16 +401,12 @@ export function syncMcpServers(
 
   // Downstream projection to Gemini
   if (geminiInstalled) {
-    const targetGeminiServers: Record<string, McpServerConfig> = {};
-    for (const [name, cfg] of Object.entries(hubServers)) {
-      targetGeminiServers[name] = adaptServerForGemini(name, cfg);
-    }
-
     if (geminiMcpExists || !geminiSettingsExists) {
       if (geminiMcpExists && !geminiMcpRead.success) {
         actions.push('[SKIP] Refusing to overwrite mcp_config.json: file is corrupt or unparseable');
       } else {
         const currentServers = geminiMcpRead.data?.mcpServers;
+        const targetGeminiServers = projectServers(hubServers, currentServers, adaptServerForGemini);
         if (!deepEqual(currentServers, targetGeminiServers)) {
           const targetData = { ...geminiMcpRead.data, mcpServers: targetGeminiServers };
           safeWriteFile(geminiMcpFile, JSON.stringify(targetData, null, 2) + '\n');
@@ -398,6 +420,7 @@ export function syncMcpServers(
         actions.push('[SKIP] Refusing to overwrite settings.json: file is corrupt or unparseable');
       } else {
         const currentServers = geminiSettingsRead.data?.mcpServers;
+        const targetGeminiServers = projectServers(hubServers, currentServers, adaptServerForGemini);
         if (!deepEqual(currentServers, targetGeminiServers)) {
           const targetData = { ...geminiSettingsRead.data, mcpServers: targetGeminiServers };
           safeWriteFile(geminiSettingsFile, JSON.stringify(targetData, null, 2) + '\n');

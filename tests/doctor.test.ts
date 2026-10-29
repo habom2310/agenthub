@@ -316,6 +316,27 @@ describe('doctor', () => {
     ).toBe(true);
   });
 
+  it('does not report drift for a Claude entry that only adds type stdio and alwaysLoad', () => {
+    setupHealthySandbox(homeDir, hubDir);
+
+    const claudeFile = path.join(homeDir, '.claude.json');
+    const claudeData = JSON.parse(fs.readFileSync(claudeFile, 'utf-8'));
+    claudeData.mcpServers['test-srv'] = {
+      type: 'stdio',
+      command: 'node',
+      args: ['srv.js'],
+      alwaysLoad: true,
+    };
+    safeWriteFile(claudeFile, JSON.stringify(claudeData, null, 2));
+
+    const report = runDoctor({ homeDir, hubDir });
+
+    expect(report.passed_checks).toContain('MCP registry synchronized');
+    expect(
+      report.issues.some((issue) => issue.includes('MCP registry out of sync'))
+    ).toBe(false);
+  });
+
   it('performs full --fix auto-repair across all platforms and assets', () => {
     setupHealthySandbox(homeDir, hubDir);
 
