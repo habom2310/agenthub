@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getEffectiveManifest, loadManifest } from './manifest.js';
-import { analyzePackage } from './security.js';
+import { analyzePackage, findMcpConfigFile, parseMcpServers } from './security.js';
 import { extractRepoShorthand } from './share.js';
 import { auditTokenBudget, estimateTokens } from './token-budget.js';
 import { parseFrontmatter } from './projector.js';
@@ -334,11 +334,14 @@ export function buildPackagePayload(
   const analysis = analyzePackage(hubDir, manifest.name);
 
   // MCP servers carry the scan's per-server risk
+  // env sends only the config's key names; the scan also pulls $VAR-like fragments out of values
+  const mcpConfigFile = findMcpConfigFile(hubDir);
+  const mcpConfig = mcpConfigFile ? parseMcpServers(mcpConfigFile).servers : {};
   const mcpServers = analysis.mcpServers.map((s) => ({
     name: s.name,
     command: s.command,
     args: s.args,
-    env: s.envVars,
+    env: Object.keys(mcpConfig[s.name]?.env ?? {}),
     risk: s.riskLevel.toLowerCase(),
     status: MCP_STATUS[s.riskLevel],
   }));

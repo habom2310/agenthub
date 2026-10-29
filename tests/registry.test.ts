@@ -422,6 +422,19 @@ describe('Registry Core Module', () => {
       expect(payload.name).toBe('my-hub');
     });
 
+    it('sends only env key names, never fragments of env values', () => {
+      safeWriteFile(path.join(tmpDir, 'agenthub.json'), JSON.stringify({ name: 'envs' }));
+      safeWriteFile(
+        path.join(tmpDir, 'mcp', 'servers.json'),
+        JSON.stringify({ mcpServers: { db: { command: 'npx', args: ['db-mcp'], env: { PW: 'pass!$word' } } } })
+      );
+
+      const payload = buildPackagePayload(tmpDir, { repoShorthand: 'bob/envs' });
+      const [server] = payload.mcpServers as Array<{ env: string[] }>;
+
+      expect(server.env).toEqual(['PW']);
+    });
+
     it('sends the scanned risk for each MCP server', () => {
       safeWriteFile(path.join(tmpDir, 'agenthub.json'), JSON.stringify({ name: 'risky' }));
       safeWriteFile(
