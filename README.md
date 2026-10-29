@@ -199,7 +199,7 @@ Your hub can be pushed to a Git repo so you (or your team) can install it anywhe
 
 #### Step by step
 
-1. **Create an empty GitHub repo** for your setup. It must be **public** if you want to publish it to the registry.
+1. **Create an empty GitHub repo** for your setup (no README or license, or the first push is rejected). It must be **public** if you want to publish it to the registry.
    ```bash
    gh repo create my-agent-setup --public
    ```
@@ -221,15 +221,19 @@ Your hub can be pushed to a Git repo so you (or your team) can install it anywhe
    ```
    - `type` is `profile` (a whole setup) or `addon` (a few rules or skills to add on top of someone else's setup).
    - Leave the existing `platforms` and `links` keys as they are; the hub uses them.
+   - `agenthub.json` is pushed as-is, and `agenthub profile use <you>/<repo>` replaces the user's own `agenthub.json` with yours.
+   - `agenthub init --force` rewrites `agenthub.json` and drops these fields.
    - Missing fields fall back to: name = repo name, type = `profile`, license = `MIT`.
    - A `README.md` in `~/.agenthub` is shown on your package page.
 
 4. **Check what you are about to share.**
    ```bash
-   agenthub budget          # boot token cost of your rules and skills
-   agenthub info ~/.agenthub  # security scan: secrets, risky scripts, MCP servers
+   agenthub budget            # boot token cost of your rules and skills
+   agenthub info ~/.agenthub  # security scan: risk level, scripts, MCP servers
    ```
-   `share` runs the same security scan and stops if it finds secrets or high-risk scripts. Remove them, or pass `--force` if you are sure they are safe.
+   `share` runs the same scan and stops on hard-coded keys in skill or `scripts/` files, or on high-risk scripts or MCP servers (shell interpreters, `curl`/`wget`, pipes, destructive commands). Fix them, or pass `--force` if you are sure they are safe.
+
+   The scan does not read `rules/` or `mcp/servers.json`. Check those by hand for pasted API keys or tokens before you share; `.env` files are already kept out by `.gitignore`.
 
 5. **Push to Git.**
    ```bash
@@ -273,8 +277,11 @@ agenthub profile use <you>/my-agent-setup       # or switch to it as a whole pro
 | `Git remote not configured` | Run step 2, or `git -C ~/.agenthub remote add origin <url>`. |
 | `Security check failed` | `share` found secrets or risky scripts. Run `agenthub info ~/.agenthub` to see them, remove them, then share again. |
 | `Publishing needs a login` | Run `agenthub login`. |
-| `Publishing needs a public GitHub remote` | The registry only accepts public GitHub repos. Point `origin` at one. |
-| `401` from the registry | Your login expired or was revoked. Log in again with `agenthub login --force`. |
+| `Publishing needs a public GitHub remote` | `origin` must be a GitHub URL. Point it at your GitHub repo. |
+| `GitHub repo <you>/<repo> not found or not public` / `must be public so others can install it` | Make the repo public on GitHub (Settings › Danger Zone › Change visibility), then publish again. |
+| `You (@<login>) don't have push access to <you>/<repo>` | You are logged in as a different GitHub account. Check `agenthub whoami`, then `agenthub login --force` as the repo owner. |
+| `<you>/<repo> was published from a different GitHub repo` | The name was published from a repo that has since been renamed or re-created. Its original publisher must run `agenthub unpublish` first. |
+| `Unauthorized: sign in with agenthub login to publish. Run: agenthub login` | Your login expired or was revoked. Run `agenthub login --force` (plain `login` says "Already logged in"). If `AGENTHUB_TOKEN` is set in your shell, unset it; it overrides the stored login. |
 
 #### Login details
 
