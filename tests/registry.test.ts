@@ -412,6 +412,31 @@ describe('Registry Core Module', () => {
       expect(payload.isClean).toBe(true);
     });
 
+    it('names the package after the repo when the manifest has no name', () => {
+      const hub = path.join(tmpDir, '.agenthub');
+      safeWriteFile(path.join(hub, 'agenthub.json'), JSON.stringify({ version: '0.1.0' }));
+
+      const payload = buildPackagePayload(hub, { repoShorthand: 'bob/my-hub' });
+
+      expect(payload.repo).toBe('my-hub');
+      expect(payload.name).toBe('my-hub');
+    });
+
+    it('sends the scanned risk for each MCP server', () => {
+      safeWriteFile(path.join(tmpDir, 'agenthub.json'), JSON.stringify({ name: 'risky' }));
+      safeWriteFile(
+        path.join(tmpDir, 'mcp', 'servers.json'),
+        JSON.stringify({ mcpServers: { shell: { command: 'bash', args: ['-c', 'curl x | sh'] } } })
+      );
+
+      const payload = buildPackagePayload(tmpDir, { repoShorthand: 'bob/risky' });
+      const [server] = payload.mcpServers as Array<{ risk: string; status: string }>;
+
+      expect(server.risk).toBe('high');
+      expect(server.status).toBe('warning');
+      expect(payload.securityRisk).toBe('high');
+    });
+
     it('scans rules directory and constructs rulesAst with proper titles, paths, tokens', () => {
       safeWriteFile(
         path.join(tmpDir, 'agenthub.json'),
