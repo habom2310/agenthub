@@ -1,6 +1,6 @@
 {
   "name": "@habom2310/agenthub",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Unified configuration, skills, rules, and MCP management engine for AI coding assistants",
   "publishConfig": {
     "access": "public"
