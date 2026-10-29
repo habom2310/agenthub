@@ -414,6 +414,124 @@ describe('mcp-sync', () => {
         '3000',
       ]);
     });
+
+    it('treats a missing type as stdio and ignores alwaysLoad', () => {
+      safeWriteFile(
+        path.join(hubDir, 'mcp', 'servers.json'),
+        JSON.stringify({
+          mcpServers: {
+            codegraph: { command: 'codegraph', args: ['serve', '--mcp'] },
+            typed: { type: 'stdio', command: 'typed-srv' },
+          },
+        })
+      );
+      const claudeServers = {
+        codegraph: {
+          type: 'stdio',
+          command: 'codegraph',
+          args: ['serve', '--mcp'],
+          alwaysLoad: true,
+        },
+        typed: { command: 'typed-srv' },
+      };
+      safeWriteFile(
+        path.join(homeDir, '.claude.json'),
+        JSON.stringify({ mcpServers: claudeServers })
+      );
+      const geminiServers = {
+        codegraph: { command: 'codegraph', args: ['serve', '--mcp'] },
+        typed: { command: 'typed-srv' },
+      };
+      safeWriteFile(
+        path.join(homeDir, '.gemini', 'config', 'mcp_config.json'),
+        JSON.stringify({ mcpServers: geminiServers })
+      );
+
+      const status = getMcpStatus(homeDir, hubDir);
+      expect(status.drifted_in_claude).toEqual([]);
+      expect(status.drifted_in_gemini).toEqual([]);
+      expect(status.in_sync).toBe(true);
+
+      // Sync fills in the missing type but keeps client keys like alwaysLoad.
+      syncMcpServers(homeDir, hubDir);
+      const claudeData = JSON.parse(
+        fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf-8')
+      );
+      expect(claudeData.mcpServers.codegraph).toEqual(claudeServers.codegraph);
+      expect(claudeData.mcpServers.typed).toEqual({ type: 'stdio', command: 'typed-srv' });
+      const geminiData = JSON.parse(
+        fs.readFileSync(
+          path.join(homeDir, '.gemini', 'config', 'mcp_config.json'),
+          'utf-8'
+        )
+      );
+      expect(geminiData.mcpServers.codegraph.type).toBe('stdio');
+      expect(getMcpStatus(homeDir, hubDir).in_sync).toBe(true);
+      expect(syncMcpServers(homeDir, hubDir).actions).toEqual([
+        'All MCP configurations are already synchronized.',
+      ]);
+    });
+
+    it.each(['sse', 'http'])(
+      'detects drift between stdio and %s, and fixes it on sync',
+      (otherType) => {
+        safeWriteFile(
+          path.join(hubDir, 'mcp', 'servers.json'),
+          JSON.stringify({
+            mcpServers: {
+              implicit: { command: 'srv' },
+              explicit: { type: 'stdio', command: 'srv' },
+            },
+          })
+        );
+        safeWriteFile(
+          path.join(homeDir, '.claude.json'),
+          JSON.stringify({
+            mcpServers: {
+              implicit: { type: otherType, command: 'srv' },
+              explicit: { type: otherType, command: 'srv' },
+            },
+          })
+        );
+
+        const status = getMcpStatus(homeDir, hubDir);
+        expect(status.drifted_in_claude.sort()).toEqual(['explicit', 'implicit']);
+        expect(status.in_sync).toBe(false);
+
+        syncMcpServers(homeDir, hubDir);
+        const after = getMcpStatus(homeDir, hubDir);
+        expect(after.in_sync).toBe(true);
+        const claudeData = JSON.parse(
+          fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf-8')
+        );
+        expect(claudeData.mcpServers.implicit.type).toBe('stdio');
+        expect(claudeData.mcpServers.explicit.type).toBe('stdio');
+      }
+    );
+
+    it('still detects env and url differences', () => {
+      safeWriteFile(
+        path.join(hubDir, 'mcp', 'servers.json'),
+        JSON.stringify({
+          mcpServers: {
+            withEnv: { command: 'srv', env: { TOKEN_NAME: 'a' } },
+            remote: { url: 'https://example.test/mcp' },
+          },
+        })
+      );
+      safeWriteFile(
+        path.join(homeDir, '.claude.json'),
+        JSON.stringify({
+          mcpServers: {
+            withEnv: { type: 'stdio', command: 'srv', env: { OTHER_NAME: 'a' } },
+            remote: { type: 'http', url: 'https://other.test/mcp' },
+          },
+        })
+      );
+
+      const status = getMcpStatus(homeDir, hubDir);
+      expect(status.drifted_in_claude.sort()).toEqual(['remote', 'withEnv']);
+    });
   });
 
   describe('uninstalled platform handling', () => {
