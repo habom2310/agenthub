@@ -195,24 +195,99 @@ agenthub profile use work
 
 ### 6. Sharing & Publishing
 
-Share your configuration across machines or publish packages to the AgentHub registry:
+Your hub can be pushed to a Git repo so you (or your team) can install it anywhere, and optionally published to the [AgentHub registry](https://agenthub-web.habom2310.workers.dev) so anyone can find it.
+
+#### Step by step
+
+1. **Create an empty GitHub repo** for your setup (no README or license, or the first push is rejected). It must be **public** if you want to publish it to the registry.
+   ```bash
+   gh repo create my-agent-setup --public
+   ```
+
+2. **Connect your hub to it.** This runs `git init` in `~/.agenthub`, sets `origin`, and writes a `.gitignore` that keeps `backups/` and `.env` files out of the repo.
+   ```bash
+   agenthub git init --remote-url https://github.com/<you>/my-agent-setup.git
+   ```
+
+3. **Describe your package (optional, recommended for the registry).** Add these fields to `~/.agenthub/agenthub.json`, next to what is already there:
+   ```json
+   {
+     "name": "my-agent-setup",
+     "description": "Lean rules and review subagents for TypeScript projects",
+     "type": "profile",
+     "tags": ["typescript", "code-review"],
+     "license": "MIT"
+   }
+   ```
+   - `type` is `profile` (a whole setup) or `addon` (a few rules or skills to add on top of someone else's setup).
+   - Leave the existing `platforms` and `links` keys as they are; the hub uses them.
+   - `agenthub.json` is pushed as-is, and `agenthub profile use <you>/<repo>` replaces the user's own `agenthub.json` with yours.
+   - `agenthub init --force` rewrites `agenthub.json` and drops these fields.
+   - Missing fields fall back to: name = repo name, type = `profile`, license = `MIT`.
+   - A `README.md` in `~/.agenthub` is shown on your package page.
+
+4. **Check what you are about to share.**
+   ```bash
+   agenthub budget            # boot token cost of your rules and skills
+   agenthub info ~/.agenthub  # security scan: risk level, scripts, MCP servers
+   ```
+   `share` runs the same scan and stops on hard-coded keys in skill or `scripts/` files, or on high-risk scripts or MCP servers (shell interpreters, `curl`/`wget`, pipes, destructive commands). Fix them, or pass `--force` if you are sure they are safe.
+
+   The scan does not read `rules/` or `mcp/servers.json`. Check those by hand for pasted API keys or tokens before you share; `.env` files are already kept out by `.gitignore`.
+
+5. **Push to Git.**
+   ```bash
+   agenthub share -m "First version of my setup"
+   ```
+   It commits everything in the hub, pushes to `origin`, and prints the commands others can run:
+   ```text
+   agenthub add <you>/my-agent-setup
+   agenthub profile use <you>/my-agent-setup
+   ```
+   This is enough for sharing with your team or your other machines. Stop here if you do not want a public registry listing.
+
+6. **Publish to the registry.** Log in once with GitHub, then publish:
+   ```bash
+   agenthub login
+   agenthub whoami          # should print your GitHub @login
+   agenthub share --publish
+   ```
+   Your package appears at `https://agenthub-web.habom2310.workers.dev/packages/<you>/my-agent-setup` and in `agenthub search`.
+
+7. **Update or remove it later.**
+   ```bash
+   agenthub share --publish -m "Add Go rules"   # push and refresh the listing
+   agenthub unpublish <you>/my-agent-setup     # remove it from the registry (the Git repo stays)
+   ```
+
+#### How others use your package
 
 ```bash
-# Push hub config to remote Git repository and generate share command
-agenthub share -m "Update team engineering rules"
-
-# Push and publish package to the AgentHub registry
-agenthub share --publish
+agenthub search typescript                      # find packages
+agenthub info <you>/my-agent-setup              # inspect it before installing
+agenthub add <you>/my-agent-setup               # install its rules, skills and MCP servers
+agenthub add <you>/my-agent-setup --rules-only  # or just the rules
+agenthub profile use <you>/my-agent-setup       # or switch to it as a whole profile
 ```
 
-Publishing is done as your GitHub account:
+#### Common errors
 
-1. Run `agenthub login` once.
-   It prints a code and a GitHub URL (device flow); approve it in the browser.
-   The token is stored in `~/.config/agenthub/auth.json` (mode 0600, outside the hub, per registry).
-2. The hub's `origin` remote must be a **public GitHub repo** you can push to.
-3. Run `agenthub share --publish`.
-   It fails fast, before pushing, if you are not logged in or the remote is not on GitHub.
+| Message | Fix |
+|---|---|
+| `Git remote not configured` | Run step 2, or `git -C ~/.agenthub remote add origin <url>`. |
+| `Security check failed` | `share` found secrets or risky scripts. Run `agenthub info ~/.agenthub` to see them, remove them, then share again. |
+| `Publishing needs a login` | Run `agenthub login`. |
+| `Publishing needs a public GitHub remote` | `origin` must be a GitHub URL. Point it at your GitHub repo. |
+| `GitHub repo <you>/<repo> not found or not public` / `must be public so others can install it` | Make the repo public on GitHub (Settings › Danger Zone › Change visibility), then publish again. |
+| `You (@<login>) don't have push access to <you>/<repo>` | You are logged in as a different GitHub account. Check `agenthub whoami`, then `agenthub login --force` as the repo owner. |
+| `<you>/<repo> was published from a different GitHub repo` | The name was published from a repo that has since been renamed or re-created. Its original publisher must run `agenthub unpublish` first. |
+| `Unauthorized: sign in with agenthub login to publish. Run: agenthub login` | Your login expired or was revoked. Run `agenthub login --force` (plain `login` says "Already logged in"). If `AGENTHUB_TOKEN` is set in your shell, unset it; it overrides the stored login. |
+
+#### Login details
+
+`agenthub login` uses GitHub's device flow: it prints a code and a URL, and you approve it in the browser.
+The token is stored in `~/.config/agenthub/auth.json` (mode 0600, outside the hub, per registry).
+`share --publish` fails fast, before pushing, if you are not logged in or the remote is not on GitHub.
 
 ```bash
 agenthub login [--force]          # log in with GitHub
