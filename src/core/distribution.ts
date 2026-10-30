@@ -2,9 +2,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import childProcess, { spawnSync } from 'node:child_process';
-import { ensureDir, safeWriteFile } from '../utils/fs.js';
+import { ensureDir, isJunctionOrSymlink, safeWriteFile } from '../utils/fs.js';
 import { getHomeDir, getHubDir } from './detector.js';
+import { finalizeInstall, vendorCheckedOutSkill } from './installer.js';
 import { linkSkillsForAllAssistants } from './linker.js';
+import { loadManifest, setDeclaredSource } from './manifest.js';
+import { parseSourceSpec } from './sources.js';
 import { syncMcpServers } from './mcp-sync.js';
 import { projectAll } from './projector.js';
 import {
@@ -27,6 +30,7 @@ export interface AddPackageResult {
   installedRules: boolean;
   installedSkills: string[];
   mergedMcpServers: string[];
+  warnings: string[];
   report: PackageAnalysisReport;
   message: string;
 }
@@ -44,10 +48,31 @@ export function sanitizeIdentifier(raw: string): string {
  * Resolves a package target (local directory or remote git repo) to a local filesystem directory.
  * Returns the resolved directory path, package identifier, and a cleanup callback.
  */
+/** Removes user:password@ from an http(s) URL so it can be recorded safely. */
+function stripUserinfo(target: string): { url: string; removed: boolean } {
+  try {
+    const u = new URL(target);
+    if (!u.username && !u.password) return { url: target, removed: false };
+    u.username = '';
+    u.password = '';
+    return { url: u.toString(), removed: true };
+  } catch {
+    return { url: target, removed: false }; // scp-style git@host:path has no password
+  }
+}
+
+export interface RemoteInfo {
+  /** "github:owner/repo" or "git:<url>", without credentials */
+  source: string;
+  commit: string;
+  warnings: string[];
+}
+
 export function resolvePackageTarget(target: string): {
   dir: string;
   identifier: string;
   cleanup: () => void;
+  remote?: RemoteInfo;
 } {
   // If target is an existing local directory
   if (fs.existsSync(target)) {
@@ -68,6 +93,9 @@ export function resolvePackageTarget(target: string): {
 
   let url: string;
   let identifier: string;
+  let source: string;
+  const warnings: string[] = [];
+  const stripped = stripUserinfo(target);
 
   const ownerRepoMatch = target.match(/^([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)$/);
   if (ownerRepoMatch) {
@@ -75,15 +103,22 @@ export function resolvePackageTarget(target: string): {
     const repo = ownerRepoMatch[2];
     url = `https://github.com/${owner}/${repo}.git`;
     identifier = sanitizeIdentifier(`${owner}-${repo}`);
+    source = `github:${owner}/${repo}`;
   } else if (
     target.startsWith('https://') ||
     target.startsWith('http://') ||
     target.startsWith('git@')
   ) {
+    if (target.includes('#')) throw new Error(`Target URL must not contain "#": ${target.replace(/\/\/[^@/]*@/, '//***@')}`);
     url = target;
     const cleanUrl = target.replace(/\/+$/, '').replace(/\.git$/, '');
     const lastSegment = cleanUrl.split(/[/:]/).pop() || 'package';
     identifier = sanitizeIdentifier(lastSegment);
+    const gh = target.match(/^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/);
+    source = gh ? `github:${gh[1]}/${gh[2]}` : `git:${stripped.url}`;
+    if (stripped.removed && !gh) {
+      warnings.push('Credentials in the URL were not recorded in agenthub.json; git will need its own credentials on other machines.');
+    }
   } else {
     throw new Error(
       `Target "${target}" is not an existing local directory, GitHub shorthand (owner/repo), or git URL.`
@@ -119,10 +154,22 @@ export function resolvePackageTarget(target: string): {
     throw new Error(`Git clone failed for ${url}: ${errMsg}`);
   }
 
+  const headRes = childProcess.spawnSync('git', ['rev-parse', 'HEAD'], {
+    cwd: tempDir,
+    encoding: 'utf-8',
+    windowsHide: true,
+  });
+  const commit = headRes.status === 0 ? headRes.stdout.trim() : '';
+  if (!/^[0-9a-f]{40}$/.test(commit)) {
+    cleanup();
+    throw new Error(`Could not determine the commit of ${url}`);
+  }
+
   return {
     dir: tempDir,
     identifier,
     cleanup,
+    remote: { source, commit, warnings },
   };
 }
 
@@ -142,7 +189,7 @@ export function packageInfo(target: string): PackageAnalysisReport {
  * Installs a package into the hub, including addon rules, skills, and MCP servers.
  */
 export function packageAdd(target: string, options?: AddPackageOptions): AddPackageResult {
-  const { dir, identifier, cleanup } = resolvePackageTarget(target);
+  const { dir, identifier, cleanup, remote } = resolvePackageTarget(target);
   try {
     const report = analyzePackage(dir, identifier);
     const hub = options?.hubDir || getHubDir();
@@ -151,6 +198,7 @@ export function packageAdd(target: string, options?: AddPackageOptions): AddPack
     let installedRules = false;
     const installedSkills: string[] = [];
     const mergedMcpServers: string[] = [];
+    const warnings: string[] = [...(remote?.warnings ?? [])];
 
     // 1. Rule Installation
     let ruleContent: string | null = null;
@@ -189,17 +237,48 @@ export function packageAdd(target: string, options?: AddPackageOptions): AddPack
       if (fs.existsSync(skillsDir) && fs.statSync(skillsDir).isDirectory()) {
         const hubSkillsDir = path.join(hub, 'skills');
         ensureDir(hubSkillsDir);
-        const entries = fs.readdirSync(skillsDir).sort();
+        const entries = fs
+          .readdirSync(skillsDir)
+          .sort()
+          .filter((entry) => fs.statSync(path.join(skillsDir, entry)).isDirectory())
+          .filter((entry) => !options?.skills?.length || options.skills.includes(entry));
+
+        // Check every skill before changing anything: names must be valid, a vendored skill is
+        // linked into skills/ so it must not shadow a real folder, and a declared skill is not
+        // silently replaced by a different kind of source.
+        const declared = loadManifest(hub)?.skills ?? {};
+        for (const entry of entries) {
+          parseSourceSpec('skills', entry, 'local');
+          const existing = path.join(hubSkillsDir, entry);
+          if (remote && fs.existsSync(existing) && !isJunctionOrSymlink(existing)) {
+            throw new Error(
+              `Skill "${entry}" already exists in the hub as a local folder. Remove skills/${entry} first.`
+            );
+          }
+          const prev = declared[entry];
+          const prevSource = typeof prev === 'string' || prev === undefined ? prev : prev.source ?? 'custom';
+          if (!remote && prevSource !== undefined && prevSource !== 'local') {
+            throw new Error(
+              `Skill "${entry}" is already declared as "${prevSource}" in agenthub.json. Remove that declaration first.`
+            );
+          }
+        }
+
         for (const entry of entries) {
           const srcSkill = path.join(skillsDir, entry);
-          if (!fs.statSync(srcSkill).isDirectory()) continue;
-          if (options?.skills && options.skills.length > 0 && !options.skills.includes(entry)) {
-            continue;
+          if (remote) {
+            const spec = `${remote.source}#skills/${entry}`;
+            vendorCheckedOutSkill(hub, entry, spec, remote.commit, srcSkill);
+          } else {
+            const destSkill = path.join(hubSkillsDir, entry);
+            // Re-adding over a vendored skill replaces its link, not the vendored files
+            if (isJunctionOrSymlink(destSkill)) fs.unlinkSync(destSkill);
+            fs.cpSync(srcSkill, destSkill, { recursive: true });
+            setDeclaredSource(hub, 'skills', entry, 'local');
           }
-          const destSkill = path.join(hubSkillsDir, entry);
-          fs.cpSync(srcSkill, destSkill, { recursive: true });
           installedSkills.push(entry);
         }
+        if (remote && installedSkills.length > 0) finalizeInstall(hub);
       }
     }
 
@@ -258,6 +337,7 @@ export function packageAdd(target: string, options?: AddPackageOptions): AddPack
       installedRules,
       installedSkills,
       mergedMcpServers,
+      warnings,
       report,
       message,
     };

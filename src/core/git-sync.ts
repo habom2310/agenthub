@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ensureDir, findExecutable, safeWriteFile } from '../utils/fs.js';
+import { ensureDir, findExecutable, getUtcTimestamp, safeWriteFile } from '../utils/fs.js';
 import { getHubDir } from './detector.js';
+import { isScaffoldDefault } from './scaffold.js';
 import { projectCodexSkillManifests } from './linker.js';
 import { projectAll } from './projector.js';
 
@@ -31,7 +32,11 @@ export const STANDARD_IGNORE_ENTRIES = [
   'Thumbs.db',
   '.env',
   '*.env',
+  '/vendor/',
 ];
+
+export const MANAGED_BLOCK_START = '# >>> agenthub managed (do not edit)';
+export const MANAGED_BLOCK_END = '# <<< agenthub managed';
 
 interface GitExecResult {
   status: number;
@@ -129,6 +134,50 @@ export function ensureGitignore(hubDir?: string): void {
     const toAppend = prefix + missing.join('\n') + '\n';
     fs.appendFileSync(gitignorePath, toAppend, 'utf-8');
   }
+}
+
+function managedBlockRange(lines: string[]): { start: number; end: number } | null {
+  const start = lines.indexOf(MANAGED_BLOCK_START);
+  if (start < 0) return null;
+  return { start, end: lines.indexOf(MANAGED_BLOCK_END, start) };
+}
+
+/** Entries currently listed in the hub .gitignore managed block. */
+export function readManagedIgnoreBlock(hubDir: string): string[] {
+  try {
+    const lines = fs.readFileSync(path.join(hubDir, '.gitignore'), 'utf-8').split(/\r?\n/);
+    const range = managedBlockRange(lines);
+    return range && range.end >= 0 ? lines.slice(range.start + 1, range.end).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Rewrites the agenthub managed block of the hub .gitignore with the given
+ * entries (skill symlinks that point into vendor/ or outside the hub).
+ * An empty list removes the block. Other lines and the file's line endings are
+ * kept; a start marker without an end marker is dropped on its own.
+ */
+export function updateManagedIgnoreBlock(hubDir: string, entries: string[]): void {
+  const gitignorePath = path.join(hubDir, '.gitignore');
+  const existing = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, 'utf-8') : '';
+  const eol = existing.includes('\r\n') ? '\r\n' : '\n';
+  const lines = existing.split(/\r?\n/);
+  const range = managedBlockRange(lines);
+  let kept = lines;
+  if (range) {
+    kept =
+      range.end >= 0
+        ? [...lines.slice(0, range.start), ...lines.slice(range.end + 1)]
+        : [...lines.slice(0, range.start), ...lines.slice(range.start + 1)];
+  }
+  while (kept.length > 0 && kept[kept.length - 1] === '') kept.pop();
+
+  const sorted = [...new Set(entries)].sort();
+  const block = sorted.length > 0 ? [MANAGED_BLOCK_START, ...sorted, MANAGED_BLOCK_END] : [];
+  const next = [...kept, ...block].join(eol) + (kept.length + block.length > 0 ? eol : '');
+  if (next !== existing) safeWriteFile(gitignorePath, next);
 }
 
 /**
@@ -383,6 +432,37 @@ export function gitPush(
   };
 }
 
+const GENERATED_GITIGNORE = STANDARD_IGNORE_ENTRIES.join('\n') + '\n';
+
+/**
+ * Before the first checkout of a remote branch: moves hub files that would be
+ * overwritten and are not untouched scaffold output into backups/pre-pull-<ts>/.
+ */
+function backupCollidingFiles(hub: string, remoteRef: string): { dir: string; files: string[] } {
+  const dir = path.join('backups', `pre-pull-${getUtcTimestamp()}`);
+  const files: string[] = [];
+  const tree = runGit(['ls-tree', '-r', '-z', '--name-only', remoteRef], hub);
+  for (const rel of tree.stdout.split('\0').filter(Boolean)) {
+    const abs = path.join(hub, rel);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(abs);
+    } catch {
+      continue;
+    }
+    if (stat.isFile()) {
+      const content = fs.readFileSync(abs);
+      const generated = rel === '.gitignore' && content.toString('utf-8') === GENERATED_GITIGNORE;
+      if (generated || isScaffoldDefault(rel, content)) continue;
+    }
+    const dest = path.join(hub, dir, rel);
+    ensureDir(path.dirname(dest));
+    fs.renameSync(abs, dest);
+    files.push(rel);
+  }
+  return { dir: dir.replace(/\\/g, '/'), files };
+}
+
 /**
  * Pulls changes from remote repository into the hub and optionally reprojects rules/skills.
  */
@@ -408,7 +488,25 @@ export function gitPull(
   }
 
   const targetBranch = branch || status.branch || 'main';
-  const pullRes = runGit(['pull', remote, targetBranch], hub);
+
+  // Unborn HEAD (fresh `git init`): setup's scaffold files would block a merge.
+  // Untouched scaffold files are replaced by the remote branch; anything else
+  // that collides is moved to backups/ first.
+  const unborn = runGit(['rev-parse', '--verify', '-q', 'HEAD'], hub).status !== 0;
+  let pullRes: GitExecResult;
+  let backupNote = '';
+  if (unborn) {
+    pullRes = runGit(['fetch', remote, `+refs/heads/${targetBranch}:refs/remotes/${remote}/${targetBranch}`], hub);
+    if (pullRes.status === 0) {
+      const backedUp = backupCollidingFiles(hub, `${remote}/${targetBranch}`);
+      if (backedUp.files.length > 0) {
+        backupNote = `\nBacked up ${backedUp.files.length} conflicting file(s) to ${backedUp.dir}: ${backedUp.files.join(', ')}`;
+      }
+      pullRes = runGit(['checkout', '-f', '-B', targetBranch, '--track', `${remote}/${targetBranch}`], hub);
+    }
+  } else {
+    pullRes = runGit(['pull', remote, targetBranch], hub);
+  }
   if (pullRes.status !== 0) {
     return {
       ok: false,
@@ -423,6 +521,6 @@ export function gitPull(
 
   return {
     ok: true,
-    message: redactGitSecrets(`Successfully pulled from ${remote}/${targetBranch}`),
+    message: redactGitSecrets(`Successfully pulled from ${remote}/${targetBranch}`) + backupNote,
   };
 }

@@ -8,6 +8,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createJunction, ensureDir } from '../utils/fs.js';
 import { getHomeDir, getHubDir } from './detector.js';
+import { MCP_PLATFORMS, MCP_PLATFORM_IDS, readPlatform, removePlatformServers, type McpPlatformId, type PlatformState } from './mcp-platforms.js';
+import { expandServerPaths, platformDrifted, readJsonSafely, readOrigins, type McpServerConfig } from './mcp-sync.js';
 
 export interface UninstallOptions {
   home?: string;
@@ -23,6 +25,10 @@ export interface UninstallResult {
   unlinkedJunctions: string[];
   restoredJunctions: string[];
   removedFiles: string[];
+  /** MCP entries removed from platform configs that no backup restored, as "<platform>:<server>" */
+  removedMcpServers: string[];
+  /** "<platform>:<server> (reason)" for servers left in place */
+  keptMcpServers: string[];
   purgedHub: boolean;
   errors: string[];
 }
@@ -169,7 +175,7 @@ function isMatchingHubTarget(linkPath: string, hubDir: string): boolean {
 }
 
 /**
- * Checks .claude/skills, .codex/skills, .cursor/skills, .codeium/windsurf/skills, .windsurf/skills.
+ * Checks .claude/skills, .codex/skills, .cursor/skills, .codeium/windsurf/skills, .windsurf/skills, .copilot/skills.
  * If it is a symlink/junction pointing to hubDir/skills or includes .agenthub:
  * Unlinks the junction.
  * If skills.old exists in parent directory, renames skills.old -> skills.
@@ -188,6 +194,7 @@ export function cleanupJunctions(
     path.join(homeDir, '.cursor', 'skills'),
     path.join(homeDir, '.codeium', 'windsurf', 'skills'),
     path.join(homeDir, '.windsurf', 'skills'),
+    path.join(homeDir, '.copilot', 'skills'),
   ];
 
   for (const linkPath of candidateLinks) {
@@ -200,6 +207,12 @@ export function cleanupJunctions(
     }
 
     if (!isLink) {
+      // Cursor's link is removed on purpose while Claude or Codex provide the skills: bring its old folder back
+      const old = path.join(path.dirname(linkPath), 'skills.old');
+      if (linkPath.includes(`${path.sep}.cursor${path.sep}`) && !fs.existsSync(linkPath) && fs.existsSync(old)) {
+        if (!dryRun) fs.renameSync(old, linkPath);
+        restored.push(linkPath);
+      }
       continue;
     }
 
@@ -415,6 +428,71 @@ export function cleanupGeneratedRules(
 }
 
 /**
+ * Removes servers the hub itself wrote into Codex, Cursor, Windsurf and Copilot
+ * configs that no backup restored. A server stays when it was ingested from that
+ * platform (it was there before agenthub), when it was never recorded as written
+ * there, or when the user changed it since. With purge, a server that would exist
+ * nowhere else after the hub is deleted stays too. Each file is read once.
+ */
+export function cleanupMcpEntries(
+  homeDir: string,
+  hubDir: string,
+  restoredFiles: Set<string>,
+  dryRun?: boolean,
+  purge?: boolean
+): { removed: string[]; kept: string[] } {
+  const removed: string[] = [];
+  const kept: string[] = [];
+  const read = readJsonSafely<{ mcpServers?: Record<string, McpServerConfig> }>(path.join(hubDir, 'mcp', 'servers.json'));
+  const hubServers = read.success && read.data.mcpServers && typeof read.data.mcpServers === 'object' ? read.data.mcpServers : {};
+  if (Object.keys(hubServers).length === 0) return { removed, kept };
+  const expanded = Object.fromEntries(Object.entries(hubServers).map(([n, c]) => [n, expandServerPaths(c, homeDir, hubDir)]));
+  const origins = readOrigins(hubDir);
+
+  const plan: Array<{ id: McpPlatformId; state: PlatformState; names: string[] }> = [];
+  for (const id of MCP_PLATFORM_IDS) {
+    const platform = MCP_PLATFORMS[id];
+    if (platform.legacy) continue;
+    const state = readPlatform(platform, homeDir);
+    const restored = state.files.every((f) => restoredFiles.has(path.relative(homeDir, f.path).replace(/\\/g, '/')) || restoredFiles.has(f.path));
+    if (restored || !state.valid) continue;
+    const names: string[] = [];
+    for (const name of Object.keys(expanded)) {
+      const native = state.servers[name];
+      if (!native) continue;
+      const o = origins[name];
+      if (o?.from.includes(id)) kept.push(`${id}:${name} (it was there before agenthub)`);
+      else if (!o?.to.includes(id)) kept.push(`${id}:${name} (not written by agenthub)`);
+      else if (platformDrifted(platform, native, expanded[name])) kept.push(`${id}:${name} (changed since)`);
+      else names.push(name);
+    }
+    plan.push({ id, state, names });
+  }
+
+  if (purge) {
+    // after a purge only these remain: Claude/Gemini configs and the entries kept above
+    const survives = new Set<string>();
+    for (const id of ['claude', 'gemini'] as const) Object.keys(readPlatform(MCP_PLATFORMS[id], homeDir).servers).forEach((n) => survives.add(n));
+    for (const p of plan) for (const name of Object.keys(p.state.servers)) if (!p.names.includes(name)) survives.add(name);
+    for (const p of plan) {
+      p.names = p.names.filter((name) => {
+        if (survives.has(name)) return true;
+        kept.push(`${p.id}:${name} (the only copy once the hub is purged)`);
+        survives.add(name);
+        return false;
+      });
+    }
+  }
+
+  for (const p of plan) {
+    if (p.names.length === 0) continue;
+    if (!dryRun) removePlatformServers(MCP_PLATFORMS[p.id], p.state, p.names);
+    removed.push(...p.names.map((n) => `${p.id}:${n}`));
+  }
+  return { removed, kept };
+}
+
+/**
  * Orchestrates full uninstallation and rollback of agenthub.
  */
 export function uninstallHub(options?: UninstallOptions): UninstallResult {
@@ -480,7 +558,16 @@ export function uninstallHub(options?: UninstallOptions): UninstallResult {
     errors.push(`Failed to clean up generated rules: ${(err as Error).message}`);
   }
 
-  // 5. Purge hub directory if requested
+  // 5. Remove hub MCP entries from platform configs that were not restored
+  let removedMcpServers: string[] = [];
+  let keptMcpServers: string[] = [];
+  try {
+    ({ removed: removedMcpServers, kept: keptMcpServers } = cleanupMcpEntries(homeDir, hubDir, restoredFilesSet, dryRun, purge));
+  } catch (err) {
+    errors.push(`Failed to clean up MCP entries: ${(err as Error).message}`);
+  }
+
+  // 6. Purge hub directory if requested
   let purgedHub = false;
   if (purge) {
     if (!dryRun) {
@@ -504,6 +591,8 @@ export function uninstallHub(options?: UninstallOptions): UninstallResult {
     unlinkedJunctions,
     restoredJunctions,
     removedFiles,
+    removedMcpServers,
+    keptMcpServers,
     purgedHub,
     errors,
   };

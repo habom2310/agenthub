@@ -195,7 +195,7 @@ describe('CLI Integration', () => {
     await cli.parseAsync(['-H', sandbox, 'doctor'], { from: 'user' });
 
     const fullLog = stripAnsi(logs.join('\n'));
-    expect(fullLog).toContain('[WARN]');
+    expect(fullLog).toContain('[FAIL]');
     expect(process.exitCode).toBe(1);
   });
 
@@ -475,10 +475,11 @@ describe('CLI Integration', () => {
 
   it('link command sets process.exitCode = 1 on linking failure', async () => {
     const linker = await import('../src/core/linker.js');
-    const spy = vi.spyOn(linker, 'linkSkillsForClaude').mockReturnValueOnce({
-      success: false,
-      message: 'Failed to create junction',
-    });
+    const real = linker.linkSkillsForAllAssistants;
+    const spy = vi.spyOn(linker, 'linkSkillsForAllAssistants').mockImplementationOnce((...args) => ({
+      ...real(...args),
+      claude: { success: false, message: 'Failed to create junction' },
+    }));
 
     await runCli(['-H', sandbox, 'link']);
     const fullLog = stripAnsi(logs.join('\n'));

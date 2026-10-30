@@ -83,6 +83,10 @@ export {
   linkSkillsForClaude,
   linkSkillsForGemini,
   linkSkillsForCodex,
+  linkSkillsForCursor,
+  linkSkillsForWindsurf,
+  linkSkillsForCopilot,
+  cursorSkillsProvider,
   projectCodexSkillManifests,
   linkSkillsForAllAssistants,
   type LinkAllSkillsResult,
@@ -92,16 +96,49 @@ export {
 // Core MCP Sync
 export {
   readJsonSafely,
+  expandPathPlaceholders,
+  contractPaths,
   normalizeServerForHub,
   adaptServerForClaude,
   adaptServerForGemini,
   getMcpStatus,
   syncMcpServers,
   type McpServerConfig,
+  type McpExtraPlatformStatus,
   type McpPlatformStatus,
   type McpStatusReport,
   type SyncMcpResult,
 } from './core/mcp-sync.js';
+
+// Core MCP platform adapters (Codex, Cursor, Windsurf, Copilot CLI)
+export {
+  MCP_PLATFORMS,
+  MCP_PLATFORM_IDS,
+  readPlatformFile,
+  projectPlatformServers,
+  writePlatformServers,
+  spliceCodexServers,
+  type McpPlatform,
+  type McpPlatformId,
+} from './core/mcp-platforms.js';
+
+// Core MCP probe
+export {
+  probeMcpServer,
+  probeMcpServers,
+  resolveServerVars,
+  MCP_PROTOCOL_VERSION,
+  type ProbeOptions,
+  type ProbeResult,
+} from './core/mcp-probe.js';
+
+// Core Skill checks
+export {
+  checkSkillDir,
+  findDuplicateSkills,
+  parseSkillFrontmatter,
+  type SkillIssue,
+} from './core/skill-check.js';
 
 // Core Connector
 export {
@@ -118,10 +155,34 @@ export {
   type DoctorOptions,
   type DoctorResult,
 } from './core/doctor.js';
+export {
+  probeTargets,
+  runFullDoctor,
+  runFunctionalChecks,
+  structuralItems,
+  countLevels,
+  type DoctorItem,
+  type FullDoctorOptions,
+  type FullDoctorResult,
+} from './core/doctor-full.js';
+
+// Core Adopt
+export {
+  runAdopt,
+  scanAdoptable,
+  applyProposal,
+  type AdoptChoice,
+  type AdoptItem,
+  type AdoptOptions,
+  type AdoptPrompter,
+  type AdoptProposal,
+  type AdoptReport,
+} from './core/adopt.js';
 
 // Core Git Sync
 export {
   STANDARD_IGNORE_ENTRIES,
+  updateManagedIgnoreBlock,
   isGitInstalled,
   isGitRepo,
   ensureGitignore,
@@ -158,8 +219,41 @@ export {
   inferManifest,
   getEffectiveManifest,
   writeManifest,
+  setDeclaredSource,
   type AgentPackageManifest,
+  type SourceSpec,
 } from './core/manifest.js';
+
+// Core Sources and Installer
+export {
+  parseSourceSpec,
+  parseDeclaredSources,
+  loadDeclaredSources,
+  loadLock,
+  loadLockChecked,
+  saveLock,
+  resolvePin,
+  type DeclaredSource,
+  type ParsedSource,
+  type LockFile,
+  type LockEntry,
+  type SourceKind,
+} from './core/sources.js';
+export {
+  hasDeclaredSources,
+  actionLabel,
+  itemLabel,
+  planInstall,
+  describePlan,
+  runInstall,
+  finalizeInstall,
+  updatePins,
+  type InstallAction,
+  type InstallPlan,
+  type InstallProblem,
+  type InstallResult,
+  type PinChange,
+} from './core/installer.js';
 
 // Core Security
 export {

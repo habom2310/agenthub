@@ -67,6 +67,7 @@ describe('distribution engine (packageInfo, packageAdd, resolvePackageTarget)', 
 
     it('clones remote repo for owner/repo shorthand', () => {
       const cloneSpy = vi.spyOn(childProcess, 'spawnSync').mockImplementation((cmd, args) => {
+        if (args?.[0] === 'rev-parse') return { status: 0, stdout: `${'a'.repeat(40)}\n`, stderr: '' } as any;
         const dest = args?.[args.length - 1] as string;
         if (dest && fs.existsSync(path.dirname(dest))) {
           ensureDir(dest);
@@ -89,6 +90,7 @@ describe('distribution engine (packageInfo, packageAdd, resolvePackageTarget)', 
         expect.any(Object)
       );
       expect(res.identifier).toBe('alice-my-agent');
+      expect(res.remote).toEqual({ source: 'github:alice/my-agent', commit: 'a'.repeat(40), warnings: [] });
       expect(fs.existsSync(res.dir)).toBe(true);
 
       // Verify cleanup removes the cloned directory
@@ -109,6 +111,92 @@ describe('distribution engine (packageInfo, packageAdd, resolvePackageTarget)', 
       expect(() => resolvePackageTarget('https://github.com/alice/not-found.git')).toThrow(
         /fatal: repository not found/
       );
+    });
+  });
+
+  describe('packageAdd with a remote target', () => {
+    const sha = 'd'.repeat(40);
+
+    const mockClone = () =>
+      vi.spyOn(childProcess, 'spawnSync').mockImplementation((cmd, args) => {
+        if (args?.[0] === 'rev-parse') return { status: 0, stdout: `${sha}\n`, stderr: '' } as any;
+        const dest = args?.[args.length - 1] as string;
+        safeWriteFile(path.join(dest, 'skills', 'alpha', 'SKILL.md'), '# alpha');
+        safeWriteFile(path.join(dest, 'skills', 'beta', 'SKILL.md'), '# beta');
+        return { status: 0, stdout: '', stderr: '' } as any;
+      });
+
+    it('vendors skills, declares github sources, locks the commit and links them', () => {
+      mockClone();
+      const res = packageAdd('alice/pack', { homeDir, hubDir, skills: ['alpha'] });
+      expect(res.installedSkills).toEqual(['alpha']);
+
+      const link = path.join(hubDir, 'skills', 'alpha');
+      expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(fs.readFileSync(path.join(link, 'SKILL.md'), 'utf-8')).toBe('# alpha');
+      expect(fs.existsSync(path.join(hubDir, 'vendor', 'skills', 'alpha', 'skills', 'alpha', 'SKILL.md'))).toBe(true);
+      expect(fs.existsSync(path.join(hubDir, 'skills', 'beta'))).toBe(false);
+
+      const manifest = JSON.parse(fs.readFileSync(path.join(hubDir, 'agenthub.json'), 'utf-8'));
+      expect(manifest.skills).toEqual({ alpha: 'github:alice/pack#skills/alpha' });
+      const lock = JSON.parse(fs.readFileSync(path.join(hubDir, 'agenthub.lock.json'), 'utf-8'));
+      expect(lock.skills.alpha).toEqual({ source: 'github:alice/pack#skills/alpha', commit: sha });
+      expect(fs.readFileSync(path.join(hubDir, '.gitignore'), 'utf-8')).toContain('/skills/alpha');
+    });
+
+    it('refuses to shadow an existing local skill folder', () => {
+      mockClone();
+      safeWriteFile(path.join(hubDir, 'skills', 'alpha', 'SKILL.md'), '# mine');
+      expect(() => packageAdd('alice/pack', { homeDir, hubDir })).toThrow(/already exists in the hub as a local folder/);
+      expect(fs.readFileSync(path.join(hubDir, 'skills', 'alpha', 'SKILL.md'), 'utf-8')).toBe('# mine');
+    });
+
+    it('does not record credentials from the URL and warns', () => {
+      mockClone();
+      const res = packageAdd('https://bob:s3cret@git.example.com/team/pack.git', { homeDir, hubDir, skills: ['alpha'] });
+      const manifest = fs.readFileSync(path.join(hubDir, 'agenthub.json'), 'utf-8');
+      const lock = fs.readFileSync(path.join(hubDir, 'agenthub.lock.json'), 'utf-8');
+      expect(manifest + lock).not.toContain('s3cret');
+      expect(manifest + lock).not.toContain('bob');
+      expect(JSON.parse(manifest).skills.alpha).toBe('git:https://git.example.com/team/pack.git#skills/alpha');
+      expect(res.warnings[0]).toContain('Credentials in the URL');
+    });
+
+    it('rejects a "#" in a remote URL', () => {
+      expect(() => resolvePackageTarget('https://git.example.com/team/pack.git#frag')).toThrow('must not contain "#"');
+    });
+
+    it('validates every skill name before vendoring any of them', () => {
+      vi.spyOn(childProcess, 'spawnSync').mockImplementation((cmd, args) => {
+        if (args?.[0] === 'rev-parse') return { status: 0, stdout: `${sha}\n`, stderr: '' } as any;
+        const dest = args?.[args.length - 1] as string;
+        safeWriteFile(path.join(dest, 'skills', 'good', 'SKILL.md'), '# good');
+        safeWriteFile(path.join(dest, 'skills', 'zz bad name', 'SKILL.md'), '# bad');
+        return { status: 0, stdout: '', stderr: '' } as any;
+      });
+      expect(() => packageAdd('alice/pack', { homeDir, hubDir })).toThrow(/invalid name/);
+      expect(fs.existsSync(path.join(hubDir, 'vendor'))).toBe(false);
+      expect(fs.existsSync(path.join(hubDir, 'skills', 'good'))).toBe(false);
+      expect(fs.existsSync(path.join(hubDir, 'agenthub.lock.json'))).toBe(false);
+    });
+
+    it('does not silently replace a vendored declaration with a local copy', () => {
+      mockClone();
+      packageAdd('alice/pack', { homeDir, hubDir, skills: ['alpha'] });
+      const pkg = path.join(tmpDir, 'localpkg2');
+      safeWriteFile(path.join(pkg, 'skills', 'alpha', 'SKILL.md'), '# mine');
+      expect(() => packageAdd(pkg, { homeDir, hubDir })).toThrow(/already declared as "github:alice\/pack#skills\/alpha"/);
+      expect(fs.readFileSync(path.join(hubDir, 'skills', 'alpha', 'SKILL.md'), 'utf-8')).toBe('# alpha');
+    });
+
+    it('copies and declares a local directory target as local', () => {
+      const pkg = path.join(tmpDir, 'localpkg');
+      safeWriteFile(path.join(pkg, 'skills', 'gamma', 'SKILL.md'), '# gamma');
+      packageAdd(pkg, { homeDir, hubDir });
+      expect(fs.lstatSync(path.join(hubDir, 'skills', 'gamma')).isSymbolicLink()).toBe(false);
+      const manifest = JSON.parse(fs.readFileSync(path.join(hubDir, 'agenthub.json'), 'utf-8'));
+      expect(manifest.skills).toEqual({ gamma: 'local' });
+      expect(fs.existsSync(path.join(hubDir, 'agenthub.lock.json'))).toBe(false);
     });
   });
 

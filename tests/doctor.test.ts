@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { setCustomHome } from '../src/core/detector.js';
 import { runDoctor } from '../src/core/doctor.js';
+import { syncMcpServers } from '../src/core/mcp-sync.js';
 import {
   createJunction,
   ensureDir,
@@ -160,6 +161,9 @@ describe('doctor', () => {
       path.join(home, '.windsurf', 'memories', 'global_rules.md'),
       'Windsurf rules'
     );
+
+    // 10. MCP: Codex and Cursor are installed, so their configs get the hub servers
+    syncMcpServers(home, hub);
   }
 
   beforeEach(() => {
@@ -516,8 +520,8 @@ describe('doctor', () => {
     const fixResult = runDoctor({ fix: true, homeDir, hubDir });
     expect(fixResult.status).toBe('PASS');
 
-    // Verify custom cursor has skills junction and rules
-    expect(isJunctionOrSymlink(path.join(customCursor, 'skills'))).toBe(true);
+    // Cursor already loads the hub skills through ~/.claude/skills, so it gets no skills link of its own
+    expect(isJunctionOrSymlink(path.join(customCursor, 'skills'))).toBe(false);
     expect(fs.existsSync(path.join(customCursor, 'rules', 'agenthub.mdc'))).toBe(true);
 
     // Verify custom windsurf has skills junction and rules

@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureDir, getUtcTimestamp, safeWriteFile } from '../utils/fs.js';
 import { getHomeDir, getHubDir } from './detector.js';
+import { DEFAULT_MANIFEST_MCP } from './manifest.js';
 
 export interface ScaffoldOptions {
   templateDir?: string;
@@ -84,7 +85,7 @@ function resolveDefaultTemplateDir(): string | null {
 
 /**
  * Performs a safe whitelist backup of targeted configuration files
- * from ~/.claude, ~/.gemini, and ~/.codex to prevent data loss.
+ * from ~/.claude, ~/.gemini, ~/.codex and the Cursor, Windsurf and Copilot MCP configs to prevent data loss.
  * Avoids backing up multi-gigabyte brain/ logs or SQLite databases.
  */
 export function backupExistingConfigs(backupDir: string, customHome?: string): string[] {
@@ -100,6 +101,9 @@ export function backupExistingConfigs(backupDir: string, customHome?: string): s
     path.join(home, '.claude', 'settings.json'),
     path.join(home, '.codex', 'AGENTS.md'),
     path.join(home, '.codex', 'config.toml'),
+    path.join(home, '.cursor', 'mcp.json'),
+    path.join(home, '.codeium', 'windsurf', 'mcp_config.json'),
+    path.join(home, '.copilot', 'mcp-config.json'),
   ];
 
   for (const t of targets) {
@@ -141,6 +145,40 @@ export function backupExistingConfigs(backupDir: string, customHome?: string): s
   }
 
   return backedUp;
+}
+
+const DEFAULT_MANIFEST_PLATFORMS: Record<string, any> = {
+  claude: { enabled: true },
+  antigravity: { enabled: true },
+  codex: { enabled: true },
+  cursor: { enabled: false },
+  windsurf: { enabled: false },
+};
+
+/**
+ * True if `content` is exactly what initHub writes for the hub-relative path
+ * `rel` from the default templates (the manifest is compared without its
+ * created_at and links, which vary per machine).
+ */
+export function isScaffoldDefault(rel: string, content: Buffer): boolean {
+  if (rel === 'agenthub.json') {
+    try {
+      const data = JSON.parse(content.toString('utf-8'));
+      delete data.created_at;
+      delete data.links;
+      const current = JSON.stringify(data);
+      return (
+        current === JSON.stringify({ version: '0.1.0', platforms: DEFAULT_MANIFEST_PLATFORMS }) ||
+        current === JSON.stringify({ version: '0.1.0', platforms: DEFAULT_MANIFEST_PLATFORMS, mcp: DEFAULT_MANIFEST_MCP })
+      );
+    } catch {
+      return false;
+    }
+  }
+  const templateDir = resolveDefaultTemplateDir();
+  if (!templateDir || !/^(rules|agents|mcp)\//.test(rel) || rel.split('/').includes('..')) return false;
+  const src = path.join(templateDir, ...rel.split('/'));
+  return isFile(src) && fs.readFileSync(src).equals(content);
 }
 
 /**
@@ -362,15 +400,7 @@ export function initHub(options?: ScaffoldOptions): ScaffoldResult {
 
   // 5. Write manifest
   const manifestFile = path.join(hub, 'agenthub.json');
-  const defaultPlatforms: Record<string, any> = {
-    claude: { enabled: true },
-    antigravity: { enabled: true },
-    codex: { enabled: true },
-    cursor: { enabled: false },
-    windsurf: { enabled: false },
-  };
-
-  const platforms: Record<string, any> = { ...defaultPlatforms };
+  const platforms: Record<string, any> = { ...DEFAULT_MANIFEST_PLATFORMS };
   if (migratedPlatforms) {
     for (const [key, val] of Object.entries(migratedPlatforms)) {
       if (val && typeof val === 'object' && !Array.isArray(val)) {
@@ -388,6 +418,7 @@ export function initHub(options?: ScaffoldOptions): ScaffoldResult {
     version: '0.1.0',
     created_at: new Date().toISOString(),
     platforms,
+    mcp: DEFAULT_MANIFEST_MCP,
     links: {
       skills: path.join(hub, 'skills'),
     },

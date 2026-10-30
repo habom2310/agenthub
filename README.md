@@ -114,6 +114,27 @@ agenthub pull                                                    # on another ma
 agenthub add git@github.com:my-team/agent-setup.git              # install from any Git URL
 ```
 
+**Skills and MCP servers are declared like code dependencies.**
+The hub records where each one comes from (`local`, `github:owner/repo#subpath`, `npm:pkg@range`, `pypi:pkg@range`, or a custom install command) in `agenthub.json`.
+`agenthub.lock.json` pins the exact commit or version.
+`agenthub push` commits your own skills and the declarations, never third-party copies.
+
+```bash
+agenthub setup && agenthub git init --remote-url git@github.com:you/my-setup.git
+agenthub pull --yes        # new machine: installs every declared skill and MCP server
+agenthub update            # move the pins forward
+```
+
+See [Skills and MCP Servers as Dependencies](docs/GUIDE.md#7b-skills-and-mcp-servers-as-dependencies) for the schema.
+
+**All six assistants get your skills and MCP servers.**
+Skills are linked into Claude, Codex, Windsurf and Copilot CLI (Cursor already reads Claude's and Codex's folders), and MCP servers are written in each assistant's own format, including Codex's `config.toml`, without disturbing the rest of the file.
+
+**Doctor checks that things work.**
+`agenthub doctor` starts each MCP server, lists its tools, validates every skill, and exits 1 on a failure.
+`agenthub adopt` brings skills and servers you already have under the hub, working out their sources without running anything.
+See [Health checks](docs/GUIDE.md#health-checks-agenthub-doctor) and [Adopt](docs/GUIDE.md#3b-adopt-existing-skills-and-mcp-servers).
+
 **Where we are going:**
 
 - ✅ Local hub: one source of truth for six assistants

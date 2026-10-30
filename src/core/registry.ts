@@ -402,7 +402,8 @@ export function buildPackagePayload(
       const entries = fs.readdirSync(skillsDir);
       for (const entry of entries) {
         const skillPath = path.join(skillsDir, entry);
-        if (fs.statSync(skillPath).isDirectory()) {
+        // Linked skills live in vendor/ and are reported under sources instead
+        if (!fs.lstatSync(skillPath).isSymbolicLink() && fs.statSync(skillPath).isDirectory()) {
           skills.push({
             name: entry,
             description: `Skill: ${entry}`,
@@ -498,6 +499,7 @@ export function buildPackagePayload(
     tags: manifest.tags || [],
     license: manifest.license || 'MIT',
     skills,
+    sources: analysis.sources.map((s) => ({ kind: s.kind, name: s.name, source: s.source, risk: s.riskLevel.toLowerCase() })),
     mcpServers,
     readme,
     tokenFootprint: Math.max(budget.total_boot_tokens || 0, rulesTokens),

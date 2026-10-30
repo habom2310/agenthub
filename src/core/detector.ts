@@ -94,6 +94,88 @@ export function getHubDir(): string {
   return path.join(getHomeDir(), '.agenthub');
 }
 
+/**
+ * The environment for commands agenthub starts, with HOME pointing at the home it
+ * works on. It is changed only when --home or AGENTHUB_HOME differs from the real
+ * home, so a normal run passes the environment through untouched.
+ */
+export function homeEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const home = getHomeDir();
+  if (path.resolve(home) === path.resolve(os.homedir())) return base;
+  const env: NodeJS.ProcessEnv = { ...base, HOME: home, USERPROFILE: home };
+  if (process.platform === 'win32') {
+    env.HOMEDRIVE = path.parse(home).root.replace(/[\\/]+$/, '');
+    env.HOMEPATH = home.slice(env.HOMEDRIVE.length) || '\\';
+  }
+  return env;
+}
+
+/** GitHub Copilot CLI: a ~/.copilot folder, or the copilot binary on PATH. */
+export function copilotInstalled(home: string): boolean {
+  return isDir(path.join(home, '.copilot')) || findExecutable('copilot') !== null;
+}
+
+/** ~/.codeium/windsurf when it exists, otherwise ~/.windsurf. */
+export function windsurfDirFor(homeDir: string): string {
+  const codeium = path.join(homeDir, '.codeium', 'windsurf');
+  return isDir(codeium) ? codeium : path.join(homeDir, '.windsurf');
+}
+
+export type SkillPlatformId = 'claude' | 'codex' | 'cursor' | 'windsurf' | 'copilot';
+
+/**
+ * The assistants whose skills folder agenthub links, in link order (Cursor after
+ * Claude and Codex, which it also reads). One list feeds detect, link, doctor and the skill checks.
+ */
+export interface SkillPlatform {
+  id: SkillPlatformId;
+  label: string;
+  detected(home: string): boolean;
+  skillsDir(home: string): string;
+  /** Other folders the assistant loads user-level skills from (https://cursor.com/docs/skills, GitHub and Devin docs) */
+  alsoReads(home: string): string[];
+}
+
+export const SKILL_PLATFORMS: SkillPlatform[] = [
+  {
+    id: 'claude',
+    label: 'Claude',
+    detected: (h) => isDir(path.join(h, '.claude')),
+    skillsDir: (h) => path.join(h, '.claude', 'skills'),
+    alsoReads: () => [],
+  },
+  {
+    id: 'codex',
+    label: 'Codex',
+    detected: (h) => isDir(path.join(h, '.codex')),
+    skillsDir: (h) => path.join(h, '.codex', 'skills'),
+    alsoReads: () => [],
+  },
+  {
+    id: 'cursor',
+    label: 'Cursor',
+    detected: (h) => isDir(path.join(h, '.cursor')),
+    skillsDir: (h) => path.join(h, '.cursor', 'skills'),
+    alsoReads: (h) => [path.join(h, '.agents', 'skills'), path.join(h, '.claude', 'skills'), path.join(h, '.codex', 'skills')],
+  },
+  {
+    id: 'windsurf',
+    label: 'Windsurf',
+    detected: (h) => isDir(path.join(h, '.codeium', 'windsurf')) || isDir(path.join(h, '.windsurf')),
+    skillsDir: (h) => path.join(windsurfDirFor(h), 'skills'),
+    alsoReads: (h) => [path.join(h, '.agents', 'skills')],
+  },
+  {
+    id: 'copilot',
+    label: 'Copilot',
+    detected: (h) => copilotInstalled(h),
+    skillsDir: (h) => path.join(h, '.copilot', 'skills'),
+    alsoReads: (h) => [path.join(h, '.agents', 'skills')],
+  },
+];
+
+export const skillPlatform = (id: SkillPlatformId): SkillPlatform => SKILL_PLATFORMS.find((p) => p.id === id) as SkillPlatform;
+
 function isDir(p: string): boolean {
   try {
     return fs.statSync(p).isDirectory();
@@ -133,6 +215,7 @@ function countDirEntries(dirPath: string): number {
  */
 export function detectPlatforms(): PlatformReport {
   const home = getHomeDir();
+  const skillsOf = (id: SkillPlatformId): string => skillPlatform(id).skillsDir(home);
   const hub = getHubDir();
 
   const manifestExists = isFile(path.join(hub, 'agenthub.json'));
@@ -194,7 +277,7 @@ export function detectPlatforms(): PlatformReport {
   // 2. Claude Code
   const claudeDir = path.join(home, '.claude');
   const claudeRules = path.join(claudeDir, 'CLAUDE.md');
-  const claudeSkills = path.join(claudeDir, 'skills');
+  const claudeSkills = skillsOf('claude');
   const claudeAgents = path.join(claudeDir, 'agents');
   const claudeSettings = path.join(claudeDir, 'settings.json');
 
@@ -220,7 +303,7 @@ export function detectPlatforms(): PlatformReport {
   // 3. OpenAI Codex CLI & ChatGPT
   const codexDir = path.join(home, '.codex');
   const codexRules = path.join(codexDir, 'AGENTS.md');
-  const codexSkills = path.join(codexDir, 'skills');
+  const codexSkills = skillsOf('codex');
   const codexConfig = path.join(codexDir, 'config.toml');
   const codexBin = findExecutable('codex');
 
@@ -243,7 +326,7 @@ export function detectPlatforms(): PlatformReport {
 
   // 4. Cursor
   const cursorDir = path.join(home, '.cursor');
-  const cursorSkills = path.join(cursorDir, 'skills');
+  const cursorSkills = skillsOf('cursor');
   const cursorRulesMdcHub = path.join(cursorDir, 'rules', 'agenthub.mdc');
   const cursorRulesLegacy = path.join(home, '.cursorrules');
 
@@ -254,15 +337,16 @@ export function detectPlatforms(): PlatformReport {
     detected: isDir(cursorDir),
     path: cursorDir,
     rules_exists: isFile(cursorRulesMdcHub) || isFile(cursorRulesLegacy),
+    skills_dir: cursorSkills,
+    skills_exists: isDir(cursorSkills),
     skills_linked: cursorSkillsLinked,
+    config_file: path.join(cursorDir, 'mcp.json'),
+    config_exists: isFile(path.join(cursorDir, 'mcp.json')),
   };
 
   // 5. Windsurf
-  let windsurfDir = path.join(home, '.codeium', 'windsurf');
-  if (!isDir(windsurfDir)) {
-    windsurfDir = path.join(home, '.windsurf');
-  }
-  const windsurfSkills = path.join(windsurfDir, 'skills');
+  const windsurfDir = windsurfDirFor(home);
+  const windsurfSkills = skillsOf('windsurf');
   const windsurfRules = path.join(windsurfDir, 'memories', 'global_rules.md');
   const windsurfRulesLegacy = path.join(home, '.windsurfrules');
 
@@ -273,16 +357,28 @@ export function detectPlatforms(): PlatformReport {
     detected: isDir(windsurfDir),
     path: windsurfDir,
     rules_exists: isFile(windsurfRules) || isFile(windsurfRulesLegacy),
+    skills_dir: windsurfSkills,
+    skills_exists: isDir(windsurfSkills),
     skills_linked: windsurfSkillsLinked,
+    config_file: path.join(home, '.codeium', 'windsurf', 'mcp_config.json'),
+    config_exists: isFile(path.join(home, '.codeium', 'windsurf', 'mcp_config.json')),
   };
 
   // 6. GitHub Copilot CLI
   const copilotPath = findExecutable('copilot');
 
+  const copilotDir = path.join(home, '.copilot');
+  const copilotSkills = skillsOf('copilot');
+
   report.platforms.copilot = {
     name: 'GitHub Copilot CLI',
-    detected: copilotPath !== null,
-    path: copilotPath || '',
+    detected: skillPlatform('copilot').detected(home),
+    path: copilotPath || (isDir(copilotDir) ? copilotDir : ''),
+    skills_dir: copilotSkills,
+    skills_exists: isDir(copilotSkills),
+    skills_linked: isDir(copilotSkills) && isJunctionOrSymlink(copilotSkills),
+    config_file: path.join(copilotDir, 'mcp-config.json'),
+    config_exists: isFile(path.join(copilotDir, 'mcp-config.json')),
   };
 
   return report;

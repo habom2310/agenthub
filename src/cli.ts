@@ -11,6 +11,8 @@ import {
   auditTokenBudget,
   connectPlatform,
   detectPlatforms,
+  actionLabel,
+  describePlan,
   detectRuleDrift,
   exportRules,
   getHomeDir,
@@ -18,24 +20,32 @@ import {
   gitInitHub,
   gitPull,
   gitPush,
+  finalizeInstall,
   gitStatus,
+  hasDeclaredSources,
   initHub,
-  linkSkillsForClaude,
-  linkSkillsForCodex,
-  linkSkillsForGemini,
+  linkSkillsForAllAssistants,
   packageAdd,
   packageInfo,
+  planInstall,
   profileCreate,
   profileList,
   profileUse,
   projectAll,
   promoteChunk,
+  probeTargets,
+  runAdopt,
   runDoctor,
+  runFullDoctor,
+  runFunctionalChecks,
+  countLevels,
+  runInstall,
   setCustomHome,
   shareSetup,
   syncMcpServers,
   getMcpStatus,
   uninstallHub,
+  updatePins,
   searchRegistry,
   publishToRegistry,
   buildPackagePayload,
@@ -50,6 +60,10 @@ import {
   deleteCredential,
   resolveToken,
   runDeviceFlow,
+  type AdoptItem,
+  type AdoptChoice,
+  type AdoptPrompter,
+  type DoctorItem,
   type MarkdownChunk,
   type PlatformDriftTarget,
   type ScaffoldResult,
@@ -106,6 +120,219 @@ export function buildCli(): Command {
         resolve(trimmed === 'y' || trimmed === 'yes');
       });
     });
+  }
+
+  // Lists what will run beyond the install plan (MCP servers started to verify them) and
+  // asks once. --yes is explicit consent; without a TTY there is nobody to ask.
+  async function consentToProbe(options: { yes?: boolean }, planCount: number): Promise<boolean> {
+    const targets = probeTargets(getHomeDir(), getHubDir());
+    if (targets.length > 0 && (options.yes || process.stdin.isTTY)) {
+      console.log(pc.bold(`Will start to verify (${targets.length}):`));
+      for (const line of targets) console.log(`  ${line}`);
+    }
+    if (planCount + targets.length === 0) return Boolean(options.yes);
+    if (options.yes) return true;
+    if (!process.stdin.isTTY) return false;
+    const what = [planCount ? `${planCount} install item(s)` : '', targets.length ? `${targets.length} server(s) to start` : ''].filter(Boolean).join(' and ');
+    return promptConfirm(`Run ${what}? [y/N] `);
+  }
+
+  // Plans, confirms once, installs declared skills/MCP servers, then links and syncs.
+  // Returns blockers (empty when everything is installed) and whether the user
+  // approved running hub-declared commands (--yes, or a "y" at the prompt).
+  // With probe, the commands that setup/pull will start to verify MCP servers are
+  // listed after the plan and covered by the same consent.
+  async function runInstallFlow(
+    options: { yes?: boolean },
+    flow: { probe?: boolean; pendingIsBlocker?: boolean } = {}
+  ): Promise<{ blockers: string[]; approved: boolean }> {
+    const hub = getHubDir();
+    const home = getHomeDir();
+    const blockers: string[] = [];
+    const plan = await planInstall(hub);
+
+    for (const e of plan.errors) {
+      console.error(pc.red(`✗ ${e.item}: ${e.message}`));
+      blockers.push(`${e.item}: ${e.message}`);
+    }
+    for (const w of plan.warnings) {
+      console.log(pc.yellow(`  ⚠ ${w}`));
+    }
+
+    let installedCount = 0;
+    let declined = false;
+    if (plan.actions.length > 0) {
+      console.log(pc.bold(`Install plan (${plan.actions.length}):`));
+      for (const line of describePlan(plan)) console.log(`  ${line}`);
+    }
+    const approved = flow.probe
+      ? await consentToProbe(options, plan.actions.length)
+      : plan.actions.length === 0
+        ? Boolean(options.yes)
+        : Boolean(options.yes) || (Boolean(process.stdin.isTTY) && (await promptConfirm(`Run these ${plan.actions.length} item(s)? [y/N] `)));
+
+    if (plan.actions.length > 0) {
+      if (approved) {
+        const result = runInstall(plan);
+        installedCount = result.installed.length;
+        for (const item of result.installed) console.log(pc.green(`✓ Installed ${item}`));
+        for (const f of result.failed) {
+          console.error(pc.red(`✗ ${f.item}: ${f.message}`));
+          blockers.push(`${f.item}: ${f.message}`);
+        }
+      } else {
+        const why = process.stdin.isTTY ? 'declined' : 'no TTY, re-run with --yes';
+        declined = true;
+        console.log(pc.yellow(`${plan.actions.length} install step(s) pending (${why}).`));
+        if (flow.pendingIsBlocker !== false) blockers.push(`${plan.actions.length} install step(s) pending (${why})`);
+        for (const p of finalizeInstall(hub, plan.actions.map(actionLabel))) blockers.push(`${p.item}: ${p.message}`);
+      }
+    } else {
+      for (const p of runInstall(plan).failed) {
+        console.error(pc.red(`✗ ${p.item}: ${p.message}`));
+        blockers.push(`${p.item}: ${p.message}`);
+      }
+    }
+
+    linkSkillsForAllAssistants({ homeDir: home, hubDir: hub });
+    syncMcpServers({ homeDir: home, hubDir: hub });
+    if (blockers.length === 0 && !declined) {
+      console.log(pc.green(`✓ Skills and MCP servers are installed${installedCount ? ` (${installedCount} new)` : ''}`));
+    }
+    return { blockers, approved };
+  }
+
+  const LEVEL_TAG: Record<DoctorItem['level'], string> = {
+    PASS: pc.green('[PASS]'),
+    WARN: pc.yellow('[WARN]'),
+    FAIL: pc.red('[FAIL]'),
+  };
+  const GROUP_TITLE: Record<DoctorItem['group'], string> = {
+    setup: 'Setup',
+    skills: 'Skills',
+    sources: 'Declared sources',
+    mcp: 'MCP servers',
+  };
+
+  // onlyProblems hides passing items except MCP probes, whose tool counts are worth seeing
+  function printItems(items: DoctorItem[], onlyProblems = false): void {
+    for (const group of ['setup', 'skills', 'sources', 'mcp'] as const) {
+      const rows = items.filter((i) => i.group === group && (!onlyProblems || i.level !== 'PASS' || group === 'mcp'));
+      if (rows.length === 0) continue;
+      console.log(pc.bold(`${GROUP_TITLE[group]}:`));
+      for (const i of rows) {
+        console.log(`  ${LEVEL_TAG[i.level]} ${i.name === i.message ? i.message : `${i.name}: ${i.message}`}`);
+      }
+    }
+  }
+
+  // Skill and source checks after setup/pull. The MCP probes and custom checks start
+  // what the hub declares, so they need approval (--yes or an accepted install prompt).
+  async function runPostChecks(approved: boolean): Promise<void> {
+    const hubHasServers = Object.keys(getMcpStatus().hub.servers).length > 0;
+    const items = await runFunctionalChecks({ functional: approved, clientVersion: VERSION });
+    if (items.length === 0 && !hubHasServers) return;
+    console.log(pc.bold('\nFunctional checks:'));
+    printItems(items, true);
+    const counts = countLevels(items);
+    console.log(`  ${pc.green('✓')} ${counts.PASS} passed${counts.WARN ? `, ${counts.WARN} warning(s)` : ''}${counts.FAIL ? `, ${counts.FAIL} failed` : ''}`);
+    if (!approved && hubHasServers) {
+      console.log(pc.dim('  MCP servers were not started: run ') + pc.cyan('agenthub doctor') + pc.dim(' (or re-run with --yes) to probe them.'));
+    }
+    if (counts.FAIL > 0) process.exitCode = 1;
+  }
+
+  // adopt: scan, then ask per item (TTY), apply confident ones (--yes), or just print
+  function describeItem(item: AdoptItem): void {
+    const tag = item.kind === 'skills' ? 'skill' : 'mcp';
+    const p = item.proposal ?? item.selfBuilt;
+    const status = item.report && !p ? pc.dim(item.report) : p ? `${p.label} ${p.confident ? pc.green('(confident)') : pc.yellow('(needs your input)')}` : '';
+    console.log(`  ${pc.bold(`${tag} ${item.name}`)}  ${status}`);
+    for (const f of item.found) console.log(pc.dim(`      found: ${f}`));
+    if (item.report && p) console.log(pc.dim(`      ${item.report}`));
+    if (p?.note) console.log(pc.dim(`      ${p.note}`));
+    if (item.selfBuilt && item.proposal) console.log(pc.dim(`      or self-built: move it into the hub as "local"`));
+  }
+
+  function proposedDeclarations(items: AdoptItem[]): string {
+    const out: Record<string, Record<string, unknown>> = {};
+    for (const item of items) {
+      const p = item.proposal ?? item.selfBuilt;
+      if (!p) continue;
+      (out[item.kind] ??= {})[item.name] = p.spec;
+    }
+    return JSON.stringify(out, null, 2);
+  }
+
+  function makePrompter(): { prompter: AdoptPrompter; close: () => void } {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const lines = rl[Symbol.asyncIterator]();
+    const ask = async (q: string): Promise<string> => {
+      process.stdout.write(q);
+      const next = await lines.next();
+      return next.done ? '' : String(next.value);
+    };
+    const prompter: AdoptPrompter = {
+      ask,
+      async choose(item: AdoptItem, choices: AdoptChoice[]): Promise<AdoptChoice> {
+        console.log('');
+        describeItem(item);
+        const keys: Record<AdoptChoice, string> = { accept: 'a', 'self-built': 'm', source: 'e', skip: 's' };
+        const menu = choices.map((c) => `(${keys[c]}) ${c === 'self-built' ? 'self-built' : c === 'source' ? 'enter source' : c}`).join('  ');
+        for (;;) {
+          const answer = (await ask(`  ${menu} [s]: `)).trim().toLowerCase();
+          if (!answer) return 'skip';
+          const hit = choices.find((c) => keys[c] === answer || c === answer);
+          if (hit) return hit;
+        }
+      },
+    };
+    return { prompter, close: () => rl.close() };
+  }
+
+  async function handleAdopt(options: { yes?: boolean; dryRun?: boolean }): Promise<void> {
+    const interactive = !options.yes && !options.dryRun && Boolean(process.stdin.isTTY);
+    const session = interactive ? makePrompter() : null;
+    let report;
+    try {
+      if (interactive) console.log(pc.bold('Scanning assistants and the hub for undeclared skills and MCP servers...'));
+      report = await runAdopt({ yes: options.yes, dryRun: options.dryRun, prompter: session?.prompter });
+    } finally {
+      session?.close();
+    }
+
+    if (report.items.length === 0) {
+      console.log(pc.green('✓ Nothing to adopt: every skill and MCP server is declared in the hub.'));
+      return;
+    }
+    if (report.mode === 'dry-run' || report.mode === 'preview') {
+      console.log(pc.bold(`Found ${report.items.length} undeclared item(s):`));
+      for (const item of report.items) describeItem(item);
+      const proposals = proposedDeclarations(report.items);
+      if (proposals !== '{}') {
+        console.log(pc.bold('\nProposed declarations for agenthub.json:'));
+        console.log(proposals);
+      }
+      console.log(
+        pc.dim(
+          report.mode === 'dry-run'
+            ? '\nDry run: nothing was changed.'
+            : '\nNothing was changed. Run in a terminal to decide per item, or use --yes to apply only the confident ones.'
+        )
+      );
+      return;
+    }
+
+    for (const a of report.applied) {
+      console.log(pc.green(`✓ ${a.item}: ${a.declared}`));
+      for (const d of a.detail) console.log(pc.dim(`    ${d}`));
+    }
+    for (const sk of report.skipped) console.log(pc.dim(`- ${sk.item}: ${sk.reason}`));
+    if (report.applied.length > 0) {
+      // one plan, one consent: fetches pinned sources, links skills, syncs MCP configs
+      const { blockers } = await runInstallFlow({ yes: options.yes });
+      if (blockers.length > 0) process.exitCode = 1;
+    }
   }
 
   // 1. detect
@@ -167,13 +394,14 @@ export function buildCli(): Command {
     }
   }
 
-  const handleSetupOrInit = (
+  const handleSetupOrInit = async (
     commandName: 'setup' | 'init',
     options: {
       force?: boolean;
       migrate?: string;
       templates?: string;
       scaffoldOnly?: boolean;
+      yes?: boolean;
       home?: string;
     }
   ) => {
@@ -193,7 +421,13 @@ export function buildCli(): Command {
 
       const homeDir = getHomeDir();
       const hubDir = getHubDir();
+      // setup and init finish even when the user declines the plan: pending items are reported, not blockers
+      const flow = hasDeclaredSources(hubDir)
+        ? await runInstallFlow(options, { probe: true, pendingIsBlocker: false })
+        : { blockers: [] as string[], approved: await consentToProbe(options, 0) };
+      const installBlockers = flow.blockers;
       const doctorRes = runDoctor({ fix: true, homeDir, hubDir });
+      doctorRes.issues.unshift(...installBlockers);
 
       if (doctorRes.issues.length > 0) {
         console.log(pc.dim(`  Hub scaffolded: ${result.manifest}`));
@@ -244,7 +478,7 @@ export function buildCli(): Command {
         configuredPlatforms.push('Windsurf');
       }
       if (report.platforms.copilot?.detected) {
-        configuredPlatforms.push('GitHub Copilot (system PATH)');
+        configuredPlatforms.push('GitHub Copilot CLI');
       }
 
       if (configuredPlatforms.length > 0) {
@@ -259,6 +493,7 @@ export function buildCli(): Command {
       console.log(
         `  ${pc.green('✓')} All health checks passed (${doctorRes.passed_checks.length}/${doctorRes.passed_checks.length})`
       );
+      await runPostChecks(flow.approved);
     } catch (err) {
       console.error(
         pc.red(
@@ -279,9 +514,10 @@ export function buildCli(): Command {
     .option('-m, --migrate <path>', 'Migrate existing configuration from path')
     .option('-t, --templates <dir>', 'Custom templates directory')
     .option('--scaffold-only', 'Only scaffold ~/.agenthub directory without auto-wiring assistants')
+    .option('-y, --yes', 'Install declared skills and MCP servers without confirmation')
     .option('-H, --home <dir>', 'Sets custom home directory')
-    .action((options) => {
-      handleSetupOrInit('setup', options);
+    .action(async (options) => {
+      await handleSetupOrInit('setup', options);
     });
 
   // 3. init
@@ -292,9 +528,10 @@ export function buildCli(): Command {
     .option('-m, --migrate <path>', 'Migrate existing configuration from path')
     .option('-t, --templates <dir>', 'Custom templates directory')
     .option('--scaffold-only', 'Only scaffold ~/.agenthub directory without auto-wiring assistants')
+    .option('-y, --yes', 'Install declared skills and MCP servers without confirmation')
     .option('-H, --home <dir>', 'Sets custom home directory')
-    .action((options) => {
-      handleSetupOrInit('init', options);
+    .action(async (options) => {
+      await handleSetupOrInit('init', options);
     });
 
   // 4. link
@@ -304,22 +541,10 @@ export function buildCli(): Command {
     .option('-H, --home <dir>', 'Sets custom home directory')
     .action((options) => {
       applyHomeOverride(options);
-      const claudeRes = linkSkillsForClaude();
-      console.log(claudeRes.success ? pc.green(`✓ ${claudeRes.message}`) : pc.red(`✗ ${claudeRes.message}`));
-
-      const geminiRes = linkSkillsForGemini();
-      console.log(geminiRes.success ? pc.green(`✓ ${geminiRes.message}`) : pc.red(`✗ ${geminiRes.message}`));
-
-      let codexRes: ReturnType<typeof linkSkillsForCodex> | undefined;
-      const codexDir = path.join(getHomeDir(), '.codex');
-      if (fs.existsSync(codexDir)) {
-        codexRes = linkSkillsForCodex();
-        console.log(codexRes.success ? pc.green(`✓ ${codexRes.message}`) : pc.red(`✗ ${codexRes.message}`));
-      }
-
-      if (!claudeRes.success || !geminiRes.success || (codexRes && !codexRes.success)) {
-        process.exitCode = 1;
-      }
+      const res = linkSkillsForAllAssistants();
+      const results = [res.claude, res.gemini, res.codex, res.cursor, res.windsurf, res.copilot].filter((r) => r !== undefined);
+      for (const r of results) console.log(r.success ? pc.green(`✓ ${r.message}`) : pc.red(`✗ ${r.message}`));
+      if (results.some((r) => !r.success)) process.exitCode = 1;
     });
 
   // 5. project
@@ -342,24 +567,55 @@ export function buildCli(): Command {
   // 6. doctor
   program
     .command('doctor')
-    .description('Verify and repair hub junctions, manifests, rules, and configurations')
-    .option('--fix', 'Automatically repair broken links, missing rules, and drifts')
+    .description('Verify and repair links, rules and configs, and check that skills and MCP servers actually work')
+    .option('--fix', 'Repair broken links, rules and drift, and offer the install flow for missing items')
+    .option('--no-functional', 'Skip the checks that start MCP servers and run custom check commands')
+    .option('--timeout <seconds>', 'Per-server MCP timeout in seconds', '20')
+    .option('--json', 'Print machine-readable JSON')
+    .option('-y, --yes', 'With --fix: install declared items without confirmation')
     .option('-H, --home <dir>', 'Sets custom home directory')
-    .action((options) => {
+    .action(async (options) => {
       applyHomeOverride(options);
-      const res = runDoctor({ fix: Boolean(options.fix) });
+      const timeoutSec = Number(options.timeout);
+      if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) {
+        console.error(pc.red(`✗ Invalid --timeout '${options.timeout}': expected a positive number of seconds.`));
+        process.exitCode = 1;
+        return;
+      }
+      const res = await runFullDoctor({
+        fix: Boolean(options.fix),
+        functional: options.functional !== false,
+        timeoutSec,
+        clientVersion: VERSION,
+        installFlow: async () => (await runInstallFlow(options)).blockers,
+      });
 
-      for (const check of res.passed_checks) {
-        console.log(`${pc.green('[PASS]')} ${check}`);
+      if (options.json) {
+        console.log(JSON.stringify({ ok: res.ok, counts: res.counts, items: res.items, repairs: res.repairs, notes: res.notes }, null, 2));
+      } else {
+        printItems(res.items);
+        for (const repair of res.repairs) console.log(`${pc.cyan('[FIXED]')} ${repair}`);
+        for (const note of res.notes) console.log(pc.dim(`  ${note}`));
+        console.log(
+          `\n${res.counts.PASS} passed, ${res.counts.WARN} warning(s), ${res.counts.FAIL} failed`
+        );
       }
-      for (const issue of res.issues) {
-        console.log(`${pc.yellow('[WARN]')} ${issue}`);
-      }
-      for (const repair of res.repairs) {
-        console.log(`${pc.cyan('[FIXED]')} ${repair}`);
-      }
+      if (!res.ok) process.exitCode = 1;
+    });
 
-      if (res.issues.length > 0 && !options.fix) {
+  // 6b. adopt
+  program
+    .command('adopt')
+    .description('Bring existing skills and MCP servers that the hub does not declare under the hub')
+    .option('-y, --yes', 'Apply confident inferences only (then install them), skip the rest')
+    .option('--dry-run', 'Print what was found and the proposed declarations, change nothing')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action(async (options) => {
+      applyHomeOverride(options);
+      try {
+        await handleAdopt(options);
+      } catch (err) {
+        console.error(pc.red(`✗ ${(err as Error).message}`));
         process.exitCode = 1;
       }
     });
@@ -515,18 +771,35 @@ export function buildCli(): Command {
   program
     .command('mcp <action>')
     .description('Manage MCP servers (status | sync)')
+    .option('--force', 'sync: also overwrite entries an assistant has of its own under the same name')
     .option('-H, --home <dir>', 'Sets custom home directory')
     .action((action, options) => {
       applyHomeOverride(options);
       if (action === 'status') {
         const status = getMcpStatus();
         console.log(pc.bold('MCP Status:'));
-        console.log(`  Sync status:    ${status.in_sync ? pc.green('[IN SYNC]') : pc.yellow('[OUT OF SYNC]')}`);
-        console.log(`  Hub servers:    ${Object.keys(status.hub.servers).join(', ') || pc.dim('none')}`);
-        console.log(`  Claude servers: ${Object.keys(status.claude.servers).join(', ') || pc.dim('none')}`);
-        console.log(`  Gemini servers: ${Object.keys(status.gemini.servers).join(', ') || pc.dim('none')}`);
+        console.log(`  Sync status:      ${status.in_sync ? pc.green('[IN SYNC]') : pc.yellow('[OUT OF SYNC]')}`);
+        console.log(`  Hub servers:      ${Object.keys(status.hub.servers).join(', ') || pc.dim('none')}`);
+        console.log(`  Claude servers:   ${Object.keys(status.claude.servers).join(', ') || pc.dim('none')}`);
+        console.log(`  Gemini servers:   ${Object.keys(status.gemini.servers).join(', ') || pc.dim('none')}`);
+        for (const st of Object.values(status.platforms)) {
+          const label = `${st.label} servers:`.padEnd(18);
+          if (!st.installed) {
+            console.log(`  ${label}${pc.dim('not detected')}`);
+          } else if (!st.valid) {
+            console.log(`  ${label}${pc.red('corrupt file')} ${pc.dim(st.path)}`);
+          } else {
+            const notes = [
+              st.missing.length ? `missing: ${st.missing.join(', ')}` : '',
+              st.untracked.length ? `untracked: ${st.untracked.join(', ')}` : '',
+              st.drifted.length ? `drifted: ${st.drifted.join(', ')}` : '',
+              st.conflicted.length ? `conflict (its own entry): ${st.conflicted.join(', ')}` : '',
+            ].filter(Boolean);
+            console.log(`  ${label}${Object.keys(st.servers).join(', ') || pc.dim('none')}${notes.length ? pc.yellow(`  (${notes.join('; ')})`) : ''}`);
+          }
+        }
       } else if (action === 'sync') {
-        const res = syncMcpServers();
+        const res = syncMcpServers({ force: Boolean(options.force) });
         console.log(pc.bold('MCP Sync:'));
         if (res.actions.length === 0) {
           console.log(pc.dim('  All servers are already synchronized.'));
@@ -667,15 +940,60 @@ export function buildCli(): Command {
     .description('Pull changes from git remote and reproject rules')
     .option('-r, --remote <remote>', 'Remote repository name', 'origin')
     .option('-b, --branch <branch>', 'Branch to pull')
-    .option('--no-reproject', 'Skip auto-reprojecting rules and manifests after pull')
+    .option('--no-reproject', 'Skip auto-reprojecting rules, manifests and installs after pull')
+    .option('-y, --yes', 'Install declared skills and MCP servers without confirmation')
     .option('-H, --home <dir>', 'Sets custom home directory')
-    .action((options) => {
+    .action(async (options) => {
       applyHomeOverride(options);
       const res = gitPull(undefined, options.remote, options.branch, options.reproject !== false);
       if (res.ok) {
         console.log(pc.green(`✓ ${res.message}`));
+        if (options.reproject !== false) {
+          const flow = await runInstallFlow(options, { probe: true });
+          if (flow.blockers.length > 0) process.exitCode = 1;
+          await runPostChecks(flow.approved);
+        }
       } else {
         console.error(pc.red(`✗ ${res.message}`));
+        process.exitCode = 1;
+      }
+    });
+
+  // 15b. install
+  program
+    .command('install')
+    .description('Install the skills and MCP servers declared in agenthub.json (pinned by agenthub.lock.json)')
+    .option('-y, --yes', 'Skip the confirmation prompt')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action(async (options) => {
+      applyHomeOverride(options);
+      try {
+        if ((await runInstallFlow(options)).blockers.length > 0) process.exitCode = 1;
+      } catch (err) {
+        console.error(pc.red(`✗ ${(err as Error).message}`));
+        process.exitCode = 1;
+      }
+    });
+
+  // 15c. update
+  program
+    .command('update [names...]')
+    .description('Re-resolve lockfile pins for declared skills and MCP servers, then install them')
+    .option('-y, --yes', 'Skip the confirmation prompt')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action(async (names: string[], options) => {
+      applyHomeOverride(options);
+      try {
+        const { changes, errors } = await updatePins(getHubDir(), names);
+        for (const c of changes) {
+          console.log(`  ${c.item}: ${c.from ? c.from.slice(0, 12) : 'unpinned'} -> ${c.to.slice(0, 12)}`);
+        }
+        if (changes.length === 0 && errors.length === 0) console.log(pc.dim('  All pins are up to date.'));
+        for (const e of errors) console.error(pc.red(`✗ ${e.item}: ${e.message}`));
+        const { blockers } = await runInstallFlow(options);
+        if (errors.length > 0 || blockers.length > 0) process.exitCode = 1;
+      } catch (err) {
+        console.error(pc.red(`✗ ${(err as Error).message}`));
         process.exitCode = 1;
       }
     });
@@ -689,7 +1007,7 @@ export function buildCli(): Command {
       applyHomeOverride(options);
       try {
         const report = packageInfo(target);
-        const { manifest, tokenFootprint, riskLevel, isClean, mcpServers, scripts, envVarsRequired, warnings } = report;
+        const { manifest, tokenFootprint, riskLevel, isClean, mcpServers, sources, scripts, envVarsRequired, warnings } = report;
 
         const riskColor = riskLevel === 'LOW' ? pc.green : riskLevel === 'MEDIUM' ? pc.yellow : pc.red;
         const cleanColor = isClean ? pc.green('Yes') : pc.yellow('No');
@@ -731,6 +1049,17 @@ export function buildCli(): Command {
           }
         }
 
+        if (sources.length > 0) {
+          console.log(pc.bold(`\nDeclared Sources (${sources.length}):`));
+          for (const src of sources) {
+            const srcRisk = src.riskLevel === 'LOW' ? pc.green(src.riskLevel) : src.riskLevel === 'MEDIUM' ? pc.yellow(src.riskLevel) : pc.red(src.riskLevel);
+            console.log(`  - ${pc.cyan(`${src.kind}.${src.name}`)}: ${src.source} [Risk: ${srcRisk}]`);
+            for (const c of src.commands) {
+              console.log(pc.yellow(`    ⚠ runs: ${c}`));
+            }
+          }
+        }
+
         if (scripts.length > 0) {
           console.log(pc.bold(`\nExecutable Scripts (${scripts.length}):`));
           for (const sc of scripts) {
@@ -744,7 +1073,7 @@ export function buildCli(): Command {
           }
         }
 
-        if (warnings.length > 0 && mcpServers.length === 0 && scripts.length === 0) {
+        if (warnings.length > 0 && mcpServers.length === 0 && scripts.length === 0 && sources.length === 0) {
           console.log(pc.bold('\nWarnings:'));
           for (const w of warnings) {
             console.log(pc.yellow(`  ⚠ ${w}`));
@@ -816,6 +1145,7 @@ export function buildCli(): Command {
           skills: selectedSkills,
         });
 
+        for (const w of res.warnings) console.log(pc.yellow(`  ⚠ ${w}`));
         console.log(pc.green(`✓ Successfully installed package "${res.identifier}"`));
         if (res.installedRules) {
           console.log(`  Rules:       Installed to rules/addons/${res.identifier}.md`);
@@ -1293,6 +1623,19 @@ export function buildCli(): Command {
         for (const f of res.removedFiles) {
           console.log(`  • Removed ${f}`);
         }
+      }
+
+      if (res.removedMcpServers.length > 0) {
+        console.log(pc.cyan('\nRemoved MCP servers that agenthub wrote:'));
+        for (const m of res.removedMcpServers) {
+          const [platform, ...name] = m.split(':');
+          console.log(`  • Removed ${name.join(':')} from ${platform}`);
+        }
+      }
+
+      if (res.keptMcpServers.length > 0) {
+        console.log(pc.cyan('\nKept in place:'));
+        for (const k of res.keptMcpServers) console.log(`  • ${k}`);
       }
 
       if (res.purgedHub) {

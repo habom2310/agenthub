@@ -1,11 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { backupSkillsDir, createJunction, ensureDir, safeWriteFile } from '../utils/fs.js';
-import { getHomeDir, getHubDir } from './detector.js';
+import { ensureDir, safeWriteFile } from '../utils/fs.js';
+import { getHomeDir, getHubDir, windsurfDirFor } from './detector.js';
 import {
   linkSkillsForClaude,
   linkSkillsForCodex,
+  linkSkillsForCursor,
   linkSkillsForGemini,
+  linkSkillsForWindsurf,
 } from './linker.js';
 import {
   projectClaudeRules,
@@ -60,8 +62,8 @@ export function updateHubManifest(
 
 /**
  * Connects Cursor to the hub:
- * - Migrates pre-existing skills to hub and renames old dir to skills.old (or a timestamped skills.old.<ts> if that exists).
- * - Creates a junction from cursor_dir/skills pointing to hubDir/skills.
+ * - Links cursor_dir/skills to hubDir/skills (migrating existing skills, old dir kept as skills.old),
+ *   unless Claude or Codex already provide the hub skills to Cursor.
  * - Projects Cursor rules.
  * - Updates the hub manifest.
  */
@@ -74,45 +76,9 @@ export function connectCursor(
   const hub = hubDir || getHubDir();
   const cursor_dir = targetDir || path.join(home, '.cursor');
 
-  const hubSkills = path.join(hub, 'skills');
-  const cursorSkills = path.join(cursor_dir, 'skills');
-
-  ensureDir(hubSkills);
-
-  let lstat: fs.Stats | null = null;
-  try {
-    lstat = fs.lstatSync(cursorSkills);
-  } catch {
-    lstat = null;
-  }
-
-  if (lstat && !lstat.isSymbolicLink() && lstat.isDirectory()) {
-    try {
-      const entries = fs.readdirSync(cursorSkills);
-      for (const entry of entries) {
-        const srcPath = path.join(cursorSkills, entry);
-        const destPath = path.join(hubSkills, entry);
-        if (!fs.existsSync(destPath)) {
-          fs.cpSync(srcPath, destPath, { recursive: true });
-        }
-      }
-
-      backupSkillsDir(cursorSkills);
-    } catch (err) {
-      return {
-        success: false,
-        message: `Failed to migrate skills: ${(err as Error).message}`,
-      };
-    }
-  }
-
-  const junctionCreated = createJunction(hubSkills, cursorSkills);
-  if (!junctionCreated) {
-    return {
-      success: false,
-      message: `Failed to create junction from ${cursorSkills} to ${hubSkills}`,
-    };
-  }
+  ensureDir(path.join(hub, 'skills'));
+  const link = linkSkillsForCursor(home, hub, cursor_dir);
+  if (!link.success) return { success: false, message: link.message };
 
   projectCursorRules(cursor_dir, home, hub);
 
@@ -129,7 +95,7 @@ export function connectCursor(
 
   return {
     success: true,
-    message: `Connected Cursor: linked skills junction and projected rules to ${cursor_dir}`,
+    message: `Connected Cursor: ${link.message}; projected rules to ${cursor_dir}`,
   };
 }
 
@@ -147,51 +113,11 @@ export function connectWindsurf(
 ): ConnectResult {
   const home = homeDir || getHomeDir();
   const hub = hubDir || getHubDir();
-  const windsurf_dir =
-    targetDir ||
-    (fs.existsSync(path.join(home, '.codeium', 'windsurf'))
-      ? path.join(home, '.codeium', 'windsurf')
-      : path.join(home, '.windsurf'));
+  const windsurf_dir = targetDir || windsurfDirFor(home);
 
-  const hubSkills = path.join(hub, 'skills');
-  const windsurfSkills = path.join(windsurf_dir, 'skills');
-
-  ensureDir(hubSkills);
-
-  let lstat: fs.Stats | null = null;
-  try {
-    lstat = fs.lstatSync(windsurfSkills);
-  } catch {
-    lstat = null;
-  }
-
-  if (lstat && !lstat.isSymbolicLink() && lstat.isDirectory()) {
-    try {
-      const entries = fs.readdirSync(windsurfSkills);
-      for (const entry of entries) {
-        const srcPath = path.join(windsurfSkills, entry);
-        const destPath = path.join(hubSkills, entry);
-        if (!fs.existsSync(destPath)) {
-          fs.cpSync(srcPath, destPath, { recursive: true });
-        }
-      }
-
-      backupSkillsDir(windsurfSkills);
-    } catch (err) {
-      return {
-        success: false,
-        message: `Failed to migrate skills: ${(err as Error).message}`,
-      };
-    }
-  }
-
-  const junctionCreated = createJunction(hubSkills, windsurfSkills);
-  if (!junctionCreated) {
-    return {
-      success: false,
-      message: `Failed to create junction from ${windsurfSkills} to ${hubSkills}`,
-    };
-  }
+  ensureDir(path.join(hub, 'skills'));
+  const link = linkSkillsForWindsurf(home, hub, windsurf_dir);
+  if (!link.success) return { success: false, message: link.message };
 
   projectWindsurfRules(windsurf_dir, home, hub);
 
