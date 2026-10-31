@@ -137,16 +137,44 @@ export function backupSkillsDir(skillsDir: string): string {
   return backup;
 }
 
+/** Follows a symlink (even a dangling one) to the file that is really written. */
+function resolveWriteTarget(filePath: string): string {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    // missing, or a dangling link
+  }
+  try {
+    if (fs.lstatSync(filePath).isSymbolicLink()) {
+      return path.resolve(path.dirname(filePath), fs.readlinkSync(filePath));
+    }
+  } catch {
+    // does not exist yet
+  }
+  return filePath;
+}
+
 /**
  * Safely writes a UTF-8 file, ensuring parent directories exist before writing.
- * Uses atomic sibling write and rename to prevent partial writes.
+ * Uses atomic sibling write and rename to prevent partial writes. A symlinked file
+ * stays a symlink (the target is rewritten) and an existing file keeps its mode.
+ * A new file gets `options.mode` (0600 for files that can hold tokens) or the
+ * default mode.
  */
-export function safeWriteFile(filePath: string, content: string): void {
-  ensureDir(path.dirname(filePath));
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+export function safeWriteFile(filePath: string, content: string, options?: { mode?: number }): void {
+  const target = resolveWriteTarget(filePath);
+  ensureDir(path.dirname(target));
+  let mode: number | undefined = options?.mode;
   try {
-    fs.writeFileSync(tempPath, content, 'utf-8');
-    fs.renameSync(tempPath, filePath);
+    mode = fs.statSync(target).mode & 0o7777;
+  } catch {
+    // new file
+  }
+  const tempPath = `${target}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, content, { encoding: 'utf-8', ...(mode !== undefined ? { mode } : {}) });
+    if (mode !== undefined && process.platform !== 'win32') fs.chmodSync(tempPath, mode);
+    fs.renameSync(tempPath, target);
   } catch (err) {
     try {
       if (fs.existsSync(tempPath)) {
@@ -223,4 +251,14 @@ export function findExecutable(name: string): string | null {
   }
 
   return null;
+}
+
+/**
+ * True when `p` is `base` or inside it. Case-insensitive on Windows and macOS,
+ * whose default file systems ignore case.
+ */
+export function isWithin(base: string, p: string): boolean {
+  const fold = (v: string) => (process.platform === 'win32' || process.platform === 'darwin' ? v.toLowerCase() : v);
+  const rel = path.relative(fold(path.resolve(base)), fold(path.resolve(p)));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }

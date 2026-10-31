@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'yaml';
-import { backupSkillsDir, createJunction, ensureDir, safeWriteFile } from '../utils/fs.js';
-import { getHomeDir, getHubDir } from './detector.js';
+import { backupSkillsDir, createJunction, ensureDir, isJunctionOrSymlink, safeWriteFile } from '../utils/fs.js';
+import { getHomeDir, getHubDir, windsurfDirFor, SKILL_PLATFORMS, type SkillPlatformId } from './detector.js';
 
 export interface LinkResult {
   success: boolean;
@@ -18,53 +18,7 @@ export function linkSkillsForClaude(
   homeDir?: string,
   hubDir?: string
 ): LinkResult {
-  const home = homeDir || getHomeDir();
-  const hub = hubDir || getHubDir();
-
-  const claudeSkills = path.join(home, '.claude', 'skills');
-  const hubSkills = path.join(hub, 'skills');
-
-  ensureDir(hubSkills);
-
-  let lstat: fs.Stats | null = null;
-  try {
-    lstat = fs.lstatSync(claudeSkills);
-  } catch {
-    lstat = null;
-  }
-
-  if (lstat && !lstat.isSymbolicLink() && lstat.isDirectory()) {
-    try {
-      const entries = fs.readdirSync(claudeSkills);
-      for (const entry of entries) {
-        const srcPath = path.join(claudeSkills, entry);
-        const destPath = path.join(hubSkills, entry);
-        if (!fs.existsSync(destPath)) {
-          fs.cpSync(srcPath, destPath, { recursive: true });
-        }
-      }
-
-      backupSkillsDir(claudeSkills);
-    } catch (err) {
-      return {
-        success: false,
-        message: `Failed to migrate skills: ${(err as Error).message}`,
-      };
-    }
-  }
-
-  const junctionCreated = createJunction(hubSkills, claudeSkills);
-  if (!junctionCreated) {
-    return {
-      success: false,
-      message: `Failed to create junction from ${claudeSkills} to ${hubSkills}`,
-    };
-  }
-
-  return {
-    success: true,
-    message: `Linked Claude skills to ${hubSkills}`,
-  };
+  return linkSkillsDir(path.join(homeDir || getHomeDir(), '.claude', 'skills'), hubDir || getHubDir(), 'Claude');
 }
 
 /**
@@ -160,51 +114,9 @@ export function linkSkillsForCodex(
     };
   }
 
-  const codexSkills = path.join(codexDir, 'skills');
-  const hubSkills = path.join(hub, 'skills');
-  ensureDir(hubSkills);
-
-  let lstat: fs.Stats | null = null;
-  try {
-    lstat = fs.lstatSync(codexSkills);
-  } catch {
-    lstat = null;
-  }
-
-  if (lstat && !lstat.isSymbolicLink() && lstat.isDirectory()) {
-    try {
-      const entries = fs.readdirSync(codexSkills);
-      for (const entry of entries) {
-        const srcPath = path.join(codexSkills, entry);
-        const destPath = path.join(hubSkills, entry);
-        if (!fs.existsSync(destPath)) {
-          fs.cpSync(srcPath, destPath, { recursive: true });
-        }
-      }
-
-      backupSkillsDir(codexSkills);
-    } catch (err) {
-      return {
-        success: false,
-        message: `Failed to migrate skills: ${(err as Error).message}`,
-      };
-    }
-  }
-
-  const junctionCreated = createJunction(hubSkills, codexSkills);
-  if (!junctionCreated) {
-    return {
-      success: false,
-      message: `Failed to create junction from ${codexSkills} to ${hubSkills}`,
-    };
-  }
-
-  projectCodexSkillManifests(hub);
-
-  return {
-    success: true,
-    message: `Linked Codex skills to ${hubSkills}`,
-  };
+  const res = linkSkillsDir(path.join(codexDir, 'skills'), hub, 'Codex');
+  if (res.success) projectCodexSkillManifests(hub);
+  return res;
 }
 
 function toTitleCase(str: string): string {
@@ -304,14 +216,115 @@ export function projectCodexSkillManifests(
   };
 }
 
+/** True when linkPath is a symlink/junction that resolves to targetPath. */
+export function isLinkTo(linkPath: string, targetPath: string): boolean {
+  try {
+    if (!fs.existsSync(linkPath) || !isJunctionOrSymlink(linkPath)) return false;
+    const linkReal = fs.realpathSync(linkPath);
+    let targetReal: string;
+    try {
+      targetReal = fs.realpathSync(targetPath);
+    } catch {
+      targetReal = path.resolve(targetPath);
+    }
+    return process.platform === 'win32' ? linkReal.toLowerCase() === targetReal.toLowerCase() : linkReal === targetReal;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Links a skills directory to the hub: a real directory is first copied into the
+ * hub (existing hub skills win) and renamed to skills.old, then the link is made.
+ */
+function linkSkillsDir(skillsDir: string, hub: string, label: string): LinkResult {
+  const hubSkills = path.join(hub, 'skills');
+  ensureDir(hubSkills);
+
+  let lstat: fs.Stats | null = null;
+  try {
+    lstat = fs.lstatSync(skillsDir);
+  } catch {
+    lstat = null;
+  }
+
+  if (lstat && !lstat.isSymbolicLink() && lstat.isDirectory()) {
+    try {
+      for (const entry of fs.readdirSync(skillsDir)) {
+        if (entry.endsWith('.old')) continue; // backups, such as the <name>.old that adopt leaves
+        const destPath = path.join(hubSkills, entry);
+        if (!fs.existsSync(destPath)) fs.cpSync(path.join(skillsDir, entry), destPath, { recursive: true });
+      }
+      backupSkillsDir(skillsDir);
+    } catch (err) {
+      return { success: false, message: `Failed to migrate skills: ${(err as Error).message}` };
+    }
+  }
+
+  if (!createJunction(hubSkills, skillsDir)) {
+    return { success: false, message: `Failed to create junction from ${skillsDir} to ${hubSkills}` };
+  }
+  return { success: true, message: `Linked ${label} skills to ${hubSkills}` };
+}
+
+/**
+ * Cursor also loads ~/.claude/skills and ~/.codex/skills (https://cursor.com/docs/skills),
+ * so when either already links to the hub, a ~/.cursor/skills link would list every
+ * skill twice. Returns the directory that provides the hub skills, or null.
+ */
+export function cursorSkillsProvider(homeDir: string, hubDir: string): string | null {
+  const hubSkills = path.join(hubDir, 'skills');
+  for (const rel of [['.claude', 'skills'], ['.codex', 'skills']]) {
+    const p = path.join(homeDir, ...rel);
+    if (isLinkTo(p, hubSkills)) return p;
+  }
+  return null;
+}
+
+/**
+ * Links Cursor skills (~/.cursor/skills) unless Claude or Codex already provide the
+ * hub skills to Cursor. An existing hub link in ~/.cursor/skills is then removed so
+ * skills are not shown twice. A real ~/.cursor/skills folder is left untouched.
+ */
+export function linkSkillsForCursor(homeDir?: string, hubDir?: string, cursorDir?: string): LinkResult {
+  const home = homeDir || getHomeDir();
+  const hub = hubDir || getHubDir();
+  const cursorSkills = path.join(cursorDir || path.join(home, '.cursor'), 'skills');
+  const provider = cursorSkillsProvider(home, hub);
+  if (!provider) return linkSkillsDir(cursorSkills, hub, 'Cursor');
+
+  if (isLinkTo(cursorSkills, path.join(hub, 'skills'))) fs.unlinkSync(cursorSkills);
+  return {
+    success: true,
+    message: `Cursor loads hub skills through ${provider}; not linking ${cursorSkills} (it would list every skill twice)`,
+  };
+}
+
+export function linkSkillsForWindsurf(homeDir?: string, hubDir?: string, windsurfDir?: string): LinkResult {
+  const home = homeDir || getHomeDir();
+  const hub = hubDir || getHubDir();
+  return linkSkillsDir(path.join(windsurfDir || windsurfDirFor(home), 'skills'), hub, 'Windsurf');
+}
+
+/** Copilot CLI reads personal skills from ~/.copilot/skills, not ~/.claude/skills. */
+export function linkSkillsForCopilot(homeDir?: string, hubDir?: string): LinkResult {
+  const home = homeDir || getHomeDir();
+  const hub = hubDir || getHubDir();
+  return linkSkillsDir(path.join(home, '.copilot', 'skills'), hub, 'Copilot');
+}
+
 export interface LinkAllSkillsResult {
   claude: LinkResult;
   gemini: LinkResult;
   codex?: LinkResult;
+  cursor?: LinkResult;
+  windsurf?: LinkResult;
+  copilot?: LinkResult;
 }
 
 /**
- * Links skills across all configured assistant platforms (Claude, Gemini, Codex).
+ * Links skills across all detected assistant platforms (Claude, Gemini, Codex,
+ * Cursor, Windsurf, Copilot CLI).
  */
 export function linkSkillsForAllAssistants(
   optionsOrHome?: string | { homeDir?: string; hubDir?: string },
@@ -328,15 +341,21 @@ export function linkSkillsForAllAssistants(
   }
   const effectiveHome = home || getHomeDir();
   const effectiveHub = hub || getHubDir();
-
-  const claude = linkSkillsForClaude(effectiveHome, effectiveHub);
-  const gemini = linkSkillsForGemini(effectiveHome, effectiveHub);
-  let codex: LinkResult | undefined;
-  const codexDir = path.join(effectiveHome, '.codex');
-  if (fs.existsSync(codexDir) && fs.statSync(codexDir).isDirectory()) {
-    codex = linkSkillsForCodex(effectiveHome, effectiveHub);
+  const linkers: Record<SkillPlatformId, () => LinkResult> = {
+    claude: () => linkSkillsForClaude(effectiveHome, effectiveHub),
+    codex: () => linkSkillsForCodex(effectiveHome, effectiveHub),
+    cursor: () => linkSkillsForCursor(effectiveHome, effectiveHub),
+    windsurf: () => linkSkillsForWindsurf(effectiveHome, effectiveHub),
+    copilot: () => linkSkillsForCopilot(effectiveHome, effectiveHub),
+  };
+  const results: Partial<Record<SkillPlatformId, LinkResult>> = {};
+  // Claude and Gemini are always linked (Claude's folder is created); the rest only when detected
+  for (const p of SKILL_PLATFORMS) {
+    if (p.id === 'claude' || p.detected(effectiveHome)) results[p.id] = linkers[p.id]();
   }
+  const gemini = linkSkillsForGemini(effectiveHome, effectiveHub);
   projectCodexSkillManifests(effectiveHub);
+  const { claude, codex, cursor, windsurf, copilot } = results;
 
-  return { claude, gemini, codex };
+  return { claude: claude as LinkResult, gemini, codex, cursor, windsurf, copilot };
 }

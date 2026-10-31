@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { getEffectiveManifest, type AgentPackageManifest } from './manifest.js';
+import { DEFAULT_MANIFEST_MCP, getEffectiveManifest, type AgentPackageManifest } from './manifest.js';
 import { STANDARD_IGNORE_ENTRIES } from './git-sync.js';
+import { parseDeclaredSources, type SourceKind } from './sources.js';
 import { estimateTokens } from './token-budget.js';
 import { parseFrontmatter } from './projector.js';
 
@@ -27,11 +28,22 @@ export interface SecretFinding {
   type: string;
 }
 
+export interface SourceAnalysis {
+  kind: SourceKind;
+  name: string;
+  /** Declared source string, e.g. "github:owner/repo#skills/x" or "custom" */
+  source: string;
+  riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+  /** Shell commands the install would run (custom check and install, build) */
+  commands: string[];
+}
+
 export interface PackageAnalysisReport {
   manifest: AgentPackageManifest;
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
   isClean: boolean;
   mcpServers: McpServerAnalysis[];
+  sources: SourceAnalysis[];
   scripts: ScriptAnalysis[];
   secrets: SecretFinding[]; // hardcoded secrets in non-script text files
   envVarsRequired: string[];
@@ -326,6 +338,7 @@ function collectScriptFiles(packageDir: string): string[] {
     for (const entry of entries) {
       if (IGNORED_DIRS.has(entry.name)) continue;
       const fullPath = path.join(currentDir, entry.name);
+      if (isVendorRoot(packageDir, fullPath)) continue;
       const relPath = path.relative(packageDir, fullPath).replace(/\\/g, '/');
 
       if (entry.isDirectory()) {
@@ -413,6 +426,36 @@ function analyzeScript(packageDir: string, filePath: string): ScriptAnalysis {
   };
 }
 
+// vendor/ holds third-party installs; they are declared, not shipped, so never scanned
+function isVendorRoot(packageDir: string, fullPath: string): boolean {
+  return path.relative(packageDir, fullPath) === 'vendor';
+}
+
+function analyzeSources(manifest: AgentPackageManifest): { sources: SourceAnalysis[]; warnings: string[] } {
+  const { sources: declared, errors } = parseDeclaredSources(manifest);
+  const warnings = errors.map((e) => `Invalid source declaration: ${e}`);
+  const sources = declared.map((d): SourceAnalysis => {
+    const p = d.parsed;
+    const commands: string[] = [];
+    let riskLevel: SourceAnalysis['riskLevel'] = 'LOW';
+    const starter = d.kind === 'mcp' ? (DEFAULT_MANIFEST_MCP as Record<string, { install: string; check: string }>)[d.name] : undefined;
+    if (p.type === 'custom' && starter && starter.install === p.install && starter.check === p.check) {
+      // the starter declaration every new hub ships with, not something the user added
+      commands.push(p.check, p.install);
+    } else if (p.type === 'custom') {
+      commands.push(p.check, p.install);
+      riskLevel = 'HIGH';
+      warnings.push(`${d.kind}.${d.name} runs custom commands (check: ${p.check}; install: ${p.install})`);
+    } else if ((p.type === 'github' || p.type === 'git' || p.type === 'local') && p.build) {
+      commands.push(p.build);
+      riskLevel = 'MEDIUM';
+      warnings.push(`${d.kind}.${d.name} runs a build command: ${p.build}`);
+    }
+    return { kind: d.kind, name: d.name, source: d.spec, riskLevel, commands };
+  });
+  return { sources, warnings };
+}
+
 function isGitignored(name: string, isDir: boolean): boolean {
   return GITIGNORED.some((g) => g.dir === isDir && g.regex.test(name));
 }
@@ -431,6 +474,7 @@ function collectTextFiles(packageDir: string, exclude: Set<string>): string[] {
     for (const entry of entries) {
       if (IGNORED_DIRS.has(entry.name)) continue;
       const fullPath = path.join(currentDir, entry.name);
+      if (isVendorRoot(packageDir, fullPath)) continue;
       if (entry.isDirectory()) {
         if (!isGitignored(entry.name, true)) walk(fullPath);
       } else if (entry.isFile() && !isGitignored(entry.name, false) && !exclude.has(fullPath)) {
@@ -596,6 +640,11 @@ export function analyzePackage(packageDir: string, fallbackName?: string): Packa
     }
   }
 
+  // Declared sources (skills/mcp in agenthub.json)
+  const sourceAnalysis = analyzeSources(manifest);
+  topLevelWarnings.push(...sourceAnalysis.warnings);
+  const sources = sourceAnalysis.sources;
+
   // Scripts Analysis
   const scriptFiles = collectScriptFiles(packageDir);
   const scripts: ScriptAnalysis[] = scriptFiles.map((sf) => analyzeScript(packageDir, sf));
@@ -641,12 +690,14 @@ export function analyzePackage(packageDir: string, fallbackName?: string): Packa
   let riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' = 'LOW';
   if (
     mcpServers.some((s) => s.riskLevel === 'HIGH') ||
+    sources.some((s) => s.riskLevel === 'HIGH') ||
     scripts.some((sc) => sc.riskLevel === 'HIGH') ||
     secrets.length > 0
   ) {
     riskLevel = 'HIGH';
   } else if (
     mcpServers.some((s) => s.riskLevel === 'MEDIUM') ||
+    sources.some((s) => s.riskLevel === 'MEDIUM') ||
     scripts.some((sc) => sc.riskLevel === 'MEDIUM')
   ) {
     riskLevel = 'MEDIUM';
@@ -660,6 +711,7 @@ export function analyzePackage(packageDir: string, fallbackName?: string): Packa
     riskLevel,
     isClean,
     mcpServers,
+    sources,
     scripts,
     secrets,
     envVarsRequired,

@@ -1,14 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { isJunctionOrSymlink } from '../utils/fs.js';
 import { connectCursor, connectWindsurf } from './connector.js';
-import { getHomeDir, getHubDir } from './detector.js';
+import { getHomeDir, getHubDir, skillPlatform } from './detector.js';
 import {
+  cursorSkillsProvider,
+  isLinkTo,
   linkSkillsForClaude,
   linkSkillsForCodex,
+  linkSkillsForCopilot,
   linkSkillsForGemini,
   projectCodexSkillManifests,
 } from './linker.js';
+import { MCP_PLATFORMS, MCP_PLATFORM_IDS } from './mcp-platforms.js';
 import { getMcpStatus, syncMcpServers } from './mcp-sync.js';
 import {
   projectClaudeRules,
@@ -28,25 +31,6 @@ export interface DoctorResult {
   passed_checks: string[];
   issues: string[];
   repairs: string[];
-}
-
-function isJunctionPointingTo(linkPath: string, targetPath: string): boolean {
-  try {
-    if (!fs.existsSync(linkPath)) return false;
-    if (!isJunctionOrSymlink(linkPath)) return false;
-    const linkReal = fs.realpathSync(linkPath);
-    let targetReal: string;
-    try {
-      targetReal = fs.realpathSync(targetPath);
-    } catch {
-      targetReal = path.resolve(targetPath);
-    }
-    return process.platform === 'win32'
-      ? linkReal.toLowerCase() === targetReal.toLowerCase()
-      : linkReal === targetReal;
-  } catch {
-    return false;
-  }
 }
 
 function performChecks(
@@ -75,7 +59,7 @@ function performChecks(
 
   // Check 2: Claude skills junction
   const claudeSkills = path.join(homeDir, '.claude', 'skills');
-  if (isJunctionPointingTo(claudeSkills, hubSkills)) {
+  if (isLinkTo(claudeSkills, hubSkills)) {
     passed_checks.push('Claude skills junction verified');
   } else {
     issues.push(`Claude skills junction missing or invalid: ${claudeSkills} does not resolve to ${hubSkills}`);
@@ -172,7 +156,7 @@ function performChecks(
 
     // Check 7: Codex skills junction
     const codexSkills = path.join(codexDir, 'skills');
-    if (isJunctionPointingTo(codexSkills, hubSkills)) {
+    if (isLinkTo(codexSkills, hubSkills)) {
       passed_checks.push('Codex skills junction verified');
     } else {
       issues.push(`Codex skills junction missing or invalid: ${codexSkills} does not resolve to ${hubSkills}`);
@@ -223,8 +207,11 @@ function performChecks(
   if (cursorDetected) {
     // Check 9: Cursor skills junction
     const cursorSkills = path.join(cursorDir, 'skills');
-    if (isJunctionPointingTo(cursorSkills, hubSkills)) {
+    const provider = cursorSkillsProvider(homeDir, hubDir);
+    if (isLinkTo(cursorSkills, hubSkills)) {
       passed_checks.push('Cursor skills junction verified');
+    } else if (provider) {
+      passed_checks.push(`Cursor skills provided through ${provider}`);
     } else {
       issues.push(`Cursor skills junction missing or invalid: ${cursorSkills} does not resolve to ${hubSkills}`);
     }
@@ -264,7 +251,7 @@ function performChecks(
   if (windsurfDetected) {
     // Check 11: Windsurf skills junction
     const windsurfSkills = path.join(windsurfDir, 'skills');
-    if (isJunctionPointingTo(windsurfSkills, hubSkills)) {
+    if (isLinkTo(windsurfSkills, hubSkills)) {
       passed_checks.push('Windsurf skills junction verified');
     } else {
       issues.push(`Windsurf skills junction missing or invalid: ${windsurfSkills} does not resolve to ${hubSkills}`);
@@ -282,6 +269,16 @@ function performChecks(
     }
   }
 
+  // Copilot CLI skills (personal skills live in ~/.copilot/skills)
+  if (skillPlatform('copilot').detected(homeDir)) {
+    const copilotSkills = path.join(homeDir, '.copilot', 'skills');
+    if (isLinkTo(copilotSkills, hubSkills)) {
+      passed_checks.push('Copilot skills junction verified');
+    } else {
+      issues.push(`Copilot skills junction missing or invalid: ${copilotSkills} does not resolve to ${hubSkills}`);
+    }
+  }
+
   // Check 13: MCP Registry Synchronization
   const mcpServersFile = path.join(hubDir, 'mcp', 'servers.json');
   if (!fs.existsSync(mcpServersFile)) {
@@ -291,34 +288,25 @@ function performChecks(
     if (!mcpStatus.hub.valid) {
       issues.push(`MCP hub registry file is invalid or corrupt JSON: ${mcpServersFile}`);
     }
-    if (!mcpStatus.claude.valid) {
-      issues.push(`Claude MCP configuration file is invalid or corrupt JSON: ${mcpStatus.claude.path}`);
+    for (const id of MCP_PLATFORM_IDS) {
+      const st = mcpStatus.platforms[id];
+      if (st.installed && !st.valid) {
+        issues.push(`${st.label} MCP configuration file is invalid or corrupt ${MCP_PLATFORMS[id].format === 'toml' ? 'TOML' : 'JSON'}: ${st.path}`);
+      }
     }
-    if (!mcpStatus.gemini.valid) {
-      issues.push(`Gemini MCP configuration file is invalid or corrupt JSON: ${mcpStatus.gemini.path}`);
-    }
+    const platformsValid = MCP_PLATFORM_IDS.every((id) => !mcpStatus.platforms[id].installed || mcpStatus.platforms[id].valid);
 
     if (mcpStatus.in_sync) {
       passed_checks.push('MCP registry synchronized');
-    } else if (mcpStatus.hub.valid && mcpStatus.claude.valid && mcpStatus.gemini.valid) {
+    } else if (mcpStatus.hub.valid && platformsValid) {
       const details: string[] = [];
-      if (mcpStatus.missing_in_claude?.length) {
-        details.push(`missing in Claude: ${mcpStatus.missing_in_claude.join(', ')}`);
-      }
-      if (mcpStatus.missing_in_gemini?.length) {
-        details.push(`missing in Gemini: ${mcpStatus.missing_in_gemini.join(', ')}`);
-      }
-      if (mcpStatus.untracked_in_claude?.length) {
-        details.push(`untracked in Claude: ${mcpStatus.untracked_in_claude.join(', ')}`);
-      }
-      if (mcpStatus.untracked_in_gemini?.length) {
-        details.push(`untracked in Gemini: ${mcpStatus.untracked_in_gemini.join(', ')}`);
-      }
-      if (mcpStatus.drifted_in_claude?.length) {
-        details.push(`drifted in Claude: ${mcpStatus.drifted_in_claude.join(', ')}`);
-      }
-      if (mcpStatus.drifted_in_gemini?.length) {
-        details.push(`drifted in Gemini: ${mcpStatus.drifted_in_gemini.join(', ')}`);
+      for (const id of MCP_PLATFORM_IDS) {
+        const st = mcpStatus.platforms[id];
+        if (st.missing.length) details.push(`missing in ${st.label}: ${st.missing.join(', ')}`);
+        if (st.untracked.length) details.push(`untracked in ${st.label}: ${st.untracked.join(', ')}`);
+        const drift = st.drifted.filter((n) => !st.conflicted.includes(n));
+        if (drift.length) details.push(`drifted in ${st.label}: ${drift.join(', ')}`);
+        if (st.conflicted.length) details.push(`conflict in ${st.label} (its own entry, not the hub's): ${st.conflicted.join(', ')}`);
       }
       issues.push(`MCP registry out of sync: ${details.join('; ') || 'discrepancies detected'}`);
     }
@@ -379,6 +367,8 @@ export function runDoctor(options?: DoctorOptions): DoctorResult {
       connectWindsurf(windsurfTarget, homeDir, hubDir);
     }
 
+    if (skillPlatform('copilot').detected(homeDir)) linkSkillsForCopilot(homeDir, hubDir);
+
     projectGeminiRules(homeDir, hubDir);
     projectClaudeRules({ homeDir, hubDir });
     projectSubagents(homeDir, hubDir);
@@ -386,7 +376,7 @@ export function runDoctor(options?: DoctorOptions): DoctorResult {
     const mcpServersFile = path.join(hubDir, 'mcp', 'servers.json');
     const mcpStatus = getMcpStatus(homeDir, hubDir);
     if (!fs.existsSync(mcpServersFile) || !mcpStatus.in_sync) {
-      const syncRes = syncMcpServers(homeDir, hubDir);
+      const syncRes = syncMcpServers({ homeDir, hubDir });
       repairs.push(...syncRes.actions);
     }
 

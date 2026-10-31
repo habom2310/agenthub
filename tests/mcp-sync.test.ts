@@ -6,6 +6,8 @@ import { setCustomHome } from '../src/core/detector.js';
 import {
   adaptServerForClaude,
   adaptServerForGemini,
+  contractPaths,
+  expandPathPlaceholders,
   getMcpStatus,
   normalizeServerForHub,
   readJsonSafely,
@@ -398,7 +400,7 @@ describe('mcp-sync', () => {
       expect(statusBefore.drifted_in_claude).toEqual(['app']);
       expect(statusBefore.missing_in_claude).toEqual([]);
 
-      const syncRes = syncMcpServers(homeDir, hubDir);
+      const syncRes = syncMcpServers({ homeDir, hubDir, force: true });
       expect(syncRes.success).toBe(true);
 
       const statusAfter = getMcpStatus(homeDir, hubDir);
@@ -498,7 +500,7 @@ describe('mcp-sync', () => {
         expect(status.drifted_in_claude.sort()).toEqual(['explicit', 'implicit']);
         expect(status.in_sync).toBe(false);
 
-        syncMcpServers(homeDir, hubDir);
+        syncMcpServers({ homeDir, hubDir, force: true });
         const after = getMcpStatus(homeDir, hubDir);
         expect(after.in_sync).toBe(true);
         const claudeData = JSON.parse(
@@ -508,6 +510,25 @@ describe('mcp-sync', () => {
         expect(claudeData.mcpServers.explicit.type).toBe('stdio');
       }
     );
+
+    it('leaves a Claude or Gemini entry the hub never wrote alone, and --force overwrites it after a backup', () => {
+      safeWriteFile(path.join(hubDir, 'mcp', 'servers.json'), JSON.stringify({ mcpServers: { app: { command: 'hub-app' } } }));
+      safeWriteFile(path.join(homeDir, '.claude.json'), JSON.stringify({ mcpServers: { app: { command: 'mine' } } }));
+      safeWriteFile(path.join(homeDir, '.gemini', 'config', 'mcp_config.json'), JSON.stringify({ mcpServers: { app: { command: 'mine-g' } } }));
+
+      expect(getMcpStatus(homeDir, hubDir).platforms.claude.conflicted).toEqual(['app']);
+      const res = syncMcpServers(homeDir, hubDir);
+      expect(res.actions.filter((a) => a.startsWith('[CONFLICT]')).map((a) => a.split(' ')[1])).toEqual(['Claude', 'Gemini']);
+      expect(JSON.parse(fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf-8')).mcpServers.app.command).toBe('mine');
+
+      const forced = syncMcpServers({ homeDir, hubDir, force: true });
+      expect(forced.actions.some((a) => a.startsWith('Backed up .claude.json to '))).toBe(true);
+      expect(JSON.parse(fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf-8')).mcpServers.app.command).toBe('hub-app');
+      const backups = fs.readdirSync(path.join(hubDir, 'backups')).filter((d) => d.startsWith('mcp-sync-'));
+      const saved = JSON.parse(fs.readFileSync(path.join(hubDir, 'backups', backups[0], '.claude.json'), 'utf-8'));
+      expect(saved.mcpServers.app.command).toBe('mine');
+      expect(getMcpStatus(homeDir, hubDir).in_sync).toBe(true);
+    });
 
     it('detects drift for a url server with sse type when the hub has no type', () => {
       safeWriteFile(
@@ -522,7 +543,7 @@ describe('mcp-sync', () => {
       );
 
       expect(getMcpStatus(homeDir, hubDir).drifted_in_claude).toEqual(['remote']);
-      syncMcpServers(homeDir, hubDir);
+      syncMcpServers({ homeDir, hubDir, force: true });
       const claudeData = JSON.parse(
         fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf-8')
       );
@@ -572,13 +593,110 @@ describe('mcp-sync', () => {
       expect(status.missing_in_gemini).toEqual([]);
       expect(status.in_sync).toBe(true);
 
-      const syncRes = syncMcpServers(homeDir, hubDir);
+      const syncRes = syncMcpServers({ homeDir, hubDir, force: true });
       expect(syncRes.success).toBe(true);
 
       // Verify no ghost files or directories created
       expect(fs.existsSync(path.join(homeDir, '.claude.json'))).toBe(false);
       expect(fs.existsSync(path.join(homeDir, '.claude'))).toBe(false);
       expect(fs.existsSync(path.join(homeDir, '.gemini'))).toBe(false);
+    });
+  });
+
+  describe('portable paths', () => {
+    it('expands ${HUB}, ${HOME} and a leading ~', () => {
+      expect(expandPathPlaceholders('${HUB}/mcp/s/run.js', '/h', '/h/.agenthub')).toBe('/h/.agenthub/mcp/s/run.js');
+      expect(expandPathPlaceholders('${HOME}/bin/x', '/h', '/hub')).toBe('/h/bin/x');
+      expect(expandPathPlaceholders('~/bin/x', '/h', '/hub')).toBe('/h/bin/x');
+      expect(expandPathPlaceholders('~', '/h', '/hub')).toBe('/h');
+      expect(expandPathPlaceholders('a~/b', '/h', '/hub')).toBe('a~/b');
+      // Windows bases get native separators for the rest of the path, urls do not
+      expect(expandPathPlaceholders('${HUB}/mcp/s/run.js', 'C:\\h', 'C:\\h\\.agenthub')).toBe('C:\\h\\.agenthub\\mcp\\s\\run.js');
+      expect(expandPathPlaceholders('~/bin/x', 'C:\\h', 'C:\\hub')).toBe('C:\\h\\bin\\x');
+      expect(expandPathPlaceholders('--root=${HOME}/a', 'C:\\h', 'C:\\hub', 'value')).toBe('--root=C:\\h\\a');
+      expect(expandPathPlaceholders('file://${HOME}/a', 'C:\\h', 'C:\\hub', 'url')).toBe('file://C:\\h/a');
+      expect(expandPathPlaceholders('~user/x', '/h', '/hub')).toBe('~user/x');
+      expect(expandPathPlaceholders('~\\x', '/h', '/hub')).toBe('~\\x');
+      // args and env values: only when the whole value is a path
+      expect(expandPathPlaceholders('~/a b', '/h', '/hub', 'value')).toBe('~/a b');
+      expect(expandPathPlaceholders('~/data', '/h', '/hub', 'value')).toBe('/h/data');
+      expect(expandPathPlaceholders('~', '/h', '/hub', 'value')).toBe('/h');
+      // never in urls, but placeholders still expand
+      expect(expandPathPlaceholders('~/x', '/h', '/hub', 'url')).toBe('~/x');
+      expect(expandPathPlaceholders('file://${HUB}/x', '/h', '/hub', 'url')).toBe('file:///hub/x');
+      expect(expandPathPlaceholders('npx', '/h', '/hub')).toBe('npx');
+    });
+
+    it('contracts hub and home paths, hub first, only on path boundaries', () => {
+      const home = '/Users/me';
+      const hub = '/Users/me/.agenthub';
+      expect(contractPaths('/Users/me/.agenthub/mcp/x.js', home, hub)).toBe('${HUB}/mcp/x.js');
+      expect(contractPaths('/Users/me/bin/x', home, hub)).toBe('${HOME}/bin/x');
+      expect(contractPaths('--dir=/Users/me/data', home, hub)).toBe('--dir=${HOME}/data');
+      expect(contractPaths('/Users/me', home, hub)).toBe('${HOME}');
+      expect(contractPaths('/Users/menace/x', home, hub)).toBe('/Users/menace/x');
+      expect(contractPaths('/opt/other', home, hub)).toBe('/opt/other');
+      expect(contractPaths('file:///Users/me/x.sock', home, hub)).toBe('file://${HOME}/x.sock');
+      // separators inside a contracted value become forward slashes
+      expect(contractPaths('C:\\Users\\me\\bin\\x', 'C:\\Users\\me', 'C:\\Users\\me\\.agenthub')).toBe('${HOME}/bin/x');
+    });
+
+    it('projects expanded paths to Claude and Gemini but keeps the hub form', () => {
+      ensureDir(path.join(homeDir, '.claude'));
+      ensureDir(path.join(homeDir, '.gemini'));
+      const hubServer = {
+        command: '${HOME}/bin/tool',
+        args: ['${HUB}/mcp/servers/t/run.js', '~/data'],
+        env: { ROOT: '${HUB}' },
+      };
+      safeWriteFile(path.join(hubDir, 'mcp', 'servers.json'), JSON.stringify({ mcpServers: { t: hubServer } }));
+
+      syncMcpServers(homeDir, hubDir);
+
+      const claude = JSON.parse(fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf-8'));
+      expect(claude.mcpServers.t).toMatchObject({
+        command: path.join(homeDir, 'bin', 'tool'),
+        args: [path.join(hubDir, 'mcp', 'servers', 't', 'run.js'), path.join(homeDir, 'data')],
+        env: { ROOT: hubDir },
+      });
+      const gemini = JSON.parse(fs.readFileSync(path.join(homeDir, '.gemini', 'config', 'mcp_config.json'), 'utf-8'));
+      expect(gemini.mcpServers.t.command).toBe(path.join(homeDir, 'bin', 'tool'));
+
+      const hubAfter = JSON.parse(fs.readFileSync(path.join(hubDir, 'mcp', 'servers.json'), 'utf-8'));
+      expect(hubAfter.mcpServers.t).toEqual(hubServer);
+
+      // Expanded forms are compared, so the placeholders do not show up as drift
+      const status = getMcpStatus(homeDir, hubDir);
+      expect(status.drifted_in_claude).toEqual([]);
+      expect(status.drifted_in_gemini).toEqual([]);
+      expect(status.in_sync).toBe(true);
+    });
+
+    it('expands and contracts cwd and url too', () => {
+      ensureDir(path.join(homeDir, '.claude'));
+      const hubServer = { command: 'node', cwd: '${HUB}/mcp/servers/c', url: 'http://localhost/${HOME}/x' };
+      safeWriteFile(path.join(hubDir, 'mcp', 'servers.json'), JSON.stringify({ mcpServers: { c: hubServer } }));
+      syncMcpServers(homeDir, hubDir);
+      const claude = JSON.parse(fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf-8'));
+      expect(claude.mcpServers.c.cwd).toBe(path.join(hubDir, 'mcp', 'servers', 'c'));
+      expect(claude.mcpServers.c.url).toBe(`http://localhost/${homeDir}/x`);
+      expect(getMcpStatus(homeDir, hubDir).in_sync).toBe(true);
+    });
+
+    it('contracts absolute paths when ingesting from Claude', () => {
+      safeWriteFile(
+        path.join(homeDir, '.claude.json'),
+        JSON.stringify({
+          mcpServers: {
+            mine: { command: 'node', args: [path.join(hubDir, 'mcp', 'servers', 'mine', 'i.js')], env: { D: path.join(homeDir, 'd') } },
+          },
+        })
+      );
+      syncMcpServers(homeDir, hubDir);
+      const hubAfter = JSON.parse(fs.readFileSync(path.join(hubDir, 'mcp', 'servers.json'), 'utf-8'));
+      expect(hubAfter.mcpServers.mine.args).toEqual(['${HUB}/mcp/servers/mine/i.js']);
+      expect(hubAfter.mcpServers.mine.env).toEqual({ D: '${HOME}/d' });
+      expect(getMcpStatus(homeDir, hubDir).in_sync).toBe(true);
     });
   });
 });

@@ -15,6 +15,7 @@ import {
   redactGitSecrets,
   STANDARD_IGNORE_ENTRIES,
 } from '../src/core/git-sync.js';
+import { initHub } from '../src/core/scaffold.js';
 import { ensureDir, safeWriteFile } from '../src/utils/fs.js';
 
 describe('git-sync', () => {
@@ -121,6 +122,10 @@ describe('git-sync', () => {
       for (const entry of STANDARD_IGNORE_ENTRIES) {
         expect(content).toContain(entry);
       }
+    });
+
+    it('ignores vendor/ at the hub root only', () => {
+      expect(STANDARD_IGNORE_ENTRIES).toContain('/vendor/');
     });
 
     it('preserves existing entries when appending to .gitignore', () => {
@@ -340,5 +345,96 @@ describe('git-sync', () => {
       const manifestContent = fs.readFileSync(manifestPath, 'utf-8');
       expect(manifestContent).toContain('Tester');
     });
+
+    it('backs up colliding user files, then checks out the remote branch, when HEAD is unborn', () => {
+      const remoteDir = path.join(tmpDir, 'remote.git');
+      spawnSync('git', ['init', '--bare', '-b', 'main', remoteDir]);
+      const feederDir = path.join(tmpDir, 'feeder');
+      ensureDir(feederDir);
+      spawnSync('git', ['init', '-b', 'main'], { cwd: feederDir });
+      spawnSync('git', ['remote', 'add', 'origin', remoteDir], { cwd: feederDir });
+      safeWriteFile(path.join(feederDir, 'rules', 'common.md'), '# Remote Rules');
+      safeWriteFile(path.join(feederDir, 'agenthub.json'), '{"name":"remote"}');
+      spawnSync('git', ['add', '-A'], { cwd: feederDir });
+      spawnSync('git', ['-c', 'user.name=f', '-c', 'user.email=f@test', 'commit', '-m', 'Initial'], { cwd: feederDir });
+      spawnSync('git', ['push', '-u', 'origin', 'main'], { cwd: feederDir });
+
+      // Scaffold defaults that setup would have written before the first pull
+      safeWriteFile(path.join(hubDir, 'rules', 'common.md'), '# Scaffold default');
+      safeWriteFile(path.join(hubDir, 'agenthub.json'), '{"name":"scaffold"}');
+      gitInitHub(hubDir, remoteDir);
+
+      const res = gitPull(hubDir, 'origin', undefined, false);
+      expect(res.ok).toBe(true);
+      expect(fs.readFileSync(path.join(hubDir, 'rules', 'common.md'), 'utf-8')).toBe('# Remote Rules');
+      expect(fs.readFileSync(path.join(hubDir, 'agenthub.json'), 'utf-8')).toBe('{"name":"remote"}');
+      expect(gitStatus(hubDir).branch).toBe('main');
+      expect(res.message).toContain('Backed up 2 conflicting file(s) to backups/pre-pull-');
+      const backups = fs.readdirSync(path.join(hubDir, 'backups')).filter((d) => d.startsWith('pre-pull-'));
+      expect(backups).toHaveLength(1);
+      const backupDir = path.join(hubDir, 'backups', backups[0]);
+      expect(fs.readFileSync(path.join(backupDir, 'rules', 'common.md'), 'utf-8')).toBe('# Scaffold default');
+      expect(fs.readFileSync(path.join(backupDir, 'agenthub.json'), 'utf-8')).toBe('{"name":"scaffold"}');
+
+      // A second pull takes the normal path and tracks the remote
+      expect(gitPull(hubDir, 'origin', undefined, false).ok).toBe(true);
+    });
+
+    it('replaces untouched scaffold output without a backup, but backs up an edited scaffold file', () => {
+      const remoteDir = path.join(tmpDir, 'remote.git');
+      spawnSync('git', ['init', '--bare', '-b', 'main', remoteDir]);
+      const feederDir = path.join(tmpDir, 'feeder');
+      ensureDir(feederDir);
+      spawnSync('git', ['init', '-b', 'main'], { cwd: feederDir });
+      spawnSync('git', ['remote', 'add', 'origin', remoteDir], { cwd: feederDir });
+      safeWriteFile(path.join(feederDir, 'rules', 'common.md'), '# Remote Rules');
+      safeWriteFile(path.join(feederDir, 'rules', 'handoffs.md'), '# Remote handoffs');
+      safeWriteFile(path.join(feederDir, 'agenthub.json'), '{"name":"remote"}');
+      safeWriteFile(path.join(feederDir, '.gitignore'), 'remote-ignore\n');
+      spawnSync('git', ['add', '-A'], { cwd: feederDir });
+      spawnSync('git', ['-c', 'user.name=f', '-c', 'user.email=f@test', 'commit', '-m', 'Initial'], { cwd: feederDir });
+      spawnSync('git', ['push', '-u', 'origin', 'main'], { cwd: feederDir });
+
+      initHub({});
+      gitInitHub(hubDir, remoteDir);
+      fs.appendFileSync(path.join(hubDir, 'rules', 'handoffs.md'), '\nMy own edit\n');
+
+      const res = gitPull(hubDir, 'origin', undefined, false);
+      expect(res.ok).toBe(true);
+      expect(res.message).toContain('Backed up 1 conflicting file(s)');
+      expect(res.message).toContain('rules/handoffs.md');
+      expect(res.message).not.toContain('agenthub.json');
+      expect(res.message).not.toContain('.gitignore');
+      expect(fs.readFileSync(path.join(hubDir, 'rules', 'handoffs.md'), 'utf-8')).toBe('# Remote handoffs');
+      expect(fs.readFileSync(path.join(hubDir, 'rules', 'common.md'), 'utf-8')).toBe('# Remote Rules');
+    });
+
+    it('reports a clear error when the remote branch does not exist', () => {
+      const remoteDir = path.join(tmpDir, 'empty.git');
+      spawnSync('git', ['init', '--bare', '-b', 'main', remoteDir]);
+      gitInitHub(hubDir, remoteDir);
+      const res = gitPull(hubDir, 'origin', undefined, false);
+      expect(res.ok).toBe(false);
+      expect(res.message).toContain('Failed to pull from origin');
+    });
+  });
+});
+
+describe('per-machine state is not committed', () => {
+  it('git ignores mcp/origins.json once the hub .gitignore is written', async () => {
+    const { ensureGitignore } = await import('../src/core/git-sync.js');
+    const { spawnSync } = await import('node:child_process');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenthub-origins-ignore-'));
+    try {
+      spawnSync('git', ['init', '-q'], { cwd: dir });
+      fs.mkdirSync(path.join(dir, 'mcp'));
+      fs.writeFileSync(path.join(dir, 'mcp', 'origins.json'), '{}');
+      fs.writeFileSync(path.join(dir, 'mcp', 'servers.json'), '{}');
+      ensureGitignore(dir);
+      expect(spawnSync('git', ['check-ignore', 'mcp/origins.json'], { cwd: dir }).status).toBe(0);
+      expect(spawnSync('git', ['check-ignore', 'mcp/servers.json'], { cwd: dir }).status).toBe(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

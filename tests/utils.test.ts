@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   backupSkillsDir,
   createJunction,
@@ -228,5 +228,43 @@ describe('fs utils', () => {
         process.env.PATH = originalPath;
       }
     });
+  });
+});
+
+describe('safeWriteFile and secret files', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenthub-safewrite-'));
+  afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it.skipIf(process.platform === 'win32')('creates new files with the requested mode (default mode otherwise) and keeps the mode of existing ones', () => {
+    const created = path.join(dir, 'new.json');
+    safeWriteFile(created, '{}', { mode: 0o600 });
+    expect(fs.statSync(created).mode & 0o777).toBe(0o600);
+    const plain = path.join(dir, 'plain.md');
+    safeWriteFile(plain, 'x');
+    expect(fs.statSync(plain).mode & 0o777).toBe(0o666 & ~process.umask());
+
+    const existing = path.join(dir, 'existing.txt');
+    fs.writeFileSync(existing, 'a');
+    fs.chmodSync(existing, 0o640);
+    safeWriteFile(existing, 'b');
+    expect(fs.readFileSync(existing, 'utf-8')).toBe('b');
+    expect(fs.statSync(existing).mode & 0o777).toBe(0o640);
+  });
+
+  it.skipIf(process.platform === 'win32')('writes through a symlink so it stays a symlink', () => {
+    const real = path.join(dir, 'dotfiles', 'config.json');
+    fs.mkdirSync(path.dirname(real), { recursive: true });
+    fs.writeFileSync(real, 'old');
+    const link = path.join(dir, 'config-link.json');
+    fs.symlinkSync(real, link);
+    safeWriteFile(link, 'new');
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(real, 'utf-8')).toBe('new');
+
+    const dangling = path.join(dir, 'dangling.json');
+    fs.symlinkSync(path.join(dir, 'dotfiles', 'created-later.json'), dangling);
+    safeWriteFile(dangling, 'x');
+    expect(fs.lstatSync(dangling).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(path.join(dir, 'dotfiles', 'created-later.json'), 'utf-8')).toBe('x');
   });
 });

@@ -10,6 +10,9 @@ process.env.HOME = home;
 process.env.USERPROFILE = home;
 delete process.env.AGENTHUB_HOME;
 delete process.env.AGENTHUB_HUB;
+// CI forces colour; output assertions expect plain text.
+process.env.NO_COLOR = '1';
+delete process.env.FORCE_COLOR;
 
 afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });

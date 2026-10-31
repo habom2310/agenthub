@@ -2,7 +2,7 @@
   "mcpServers": {
     "codegraph": {
       "command": "codegraph",
-      "args": ["serve"]
+      "args": ["serve", "--mcp"]
     }
   }
 }
