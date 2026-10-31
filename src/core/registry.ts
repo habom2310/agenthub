@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import { ignoredNames } from './local.js';
+import { listSkillCollections } from './skill-check.js';
 import path from 'node:path';
 import { getEffectiveManifest, loadManifest } from './manifest.js';
 import { analyzePackage, findMcpConfigFile, parseMcpServers } from './security.js';
@@ -400,7 +402,9 @@ export function buildPackagePayload(
   if (fs.existsSync(skillsDir) && fs.statSync(skillsDir).isDirectory()) {
     try {
       const entries = fs.readdirSync(skillsDir);
+      const hidden = new Set([...ignoredNames(hubDir, 'skills'), ...listSkillCollections(skillsDir)]);
       for (const entry of entries) {
+        if (hidden.has(entry)) continue;
         const skillPath = path.join(skillsDir, entry);
         // Linked skills live in vendor/ and are reported under sources instead
         if (!fs.lstatSync(skillPath).isSymbolicLink() && fs.statSync(skillPath).isDirectory()) {

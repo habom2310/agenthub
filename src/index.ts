@@ -103,6 +103,8 @@ export {
   adaptServerForGemini,
   getMcpStatus,
   syncMcpServers,
+  adoptStarterOverrides,
+  purgeIgnoredMcp,
   type McpServerConfig,
   type McpExtraPlatformStatus,
   type McpPlatformStatus,
@@ -193,7 +195,9 @@ export {
   redactGitSecrets,
   type GitStatusResult,
   type GitOperationResult,
+  ignoreMachineSpecificSkills,
 } from './core/git-sync.js';
+export { readIgnored, updateIgnored } from './core/local.js';
 
 // Core Exporter
 export {

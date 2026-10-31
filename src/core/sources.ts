@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { safeWriteFile } from '../utils/fs.js';
 import { homeEnv } from './detector.js';
+import { ignoredNames } from './local.js';
 import { loadManifest, type AgentPackageManifest, type SourceSpec } from './manifest.js';
 
 export type SourceKind = 'skills' | 'mcp';
@@ -12,7 +13,7 @@ export type ParsedSource =
   | { type: 'github' | 'git'; url: string; ref?: string; subpath?: string; build?: string }
   | { type: 'npm'; pkg: string; range: string; subpath?: string }
   | { type: 'pypi'; pkg: string; range: string }
-  | { type: 'custom'; install: string; check: string; path?: string };
+  | { type: 'custom'; install?: string; check: string; path?: string };
 
 export interface DeclaredSource {
   kind: SourceKind;
@@ -121,7 +122,7 @@ const PYPI_RANGE_RE = /^[\w.<>=!,*+-]+$/;
 export const COMMIT_RE = /^[0-9a-f]{40}$/;
 export const VERSION_RE = /^\d[\w.+!-]*$/;
 const SOURCE_FORMS =
-  'local, github:owner/repo[#subpath], git:<url>[#subpath], npm:pkg@range[#subpath], pypi:pkg@range, or {install, check}';
+  'local, github:owner/repo[#subpath], git:<url>[#subpath], npm:pkg@range[#subpath], pypi:pkg@range, or {check[, install]}';
 
 function validSubpath(sub: string): boolean {
   return sub !== '' && !sub.startsWith('/') && !sub.split(/[\\/]/).includes('..');
@@ -158,13 +159,13 @@ export function parseSourceSpec(kind: SourceKind, name: string, raw: unknown): D
   }
 
   if (str === undefined) {
-    if (!obj.install || !obj.check) {
-      throw new Error(`${label}: an object without "source" needs both "install" and "check" commands`);
+    if (!obj.check) {
+      throw new Error(`${label}: an object without "source" needs a "check" command (and optionally an "install" command)`);
     }
     if (kind === 'skills' && !obj.path) {
       throw new Error(`${label}: a custom skill needs "path" (the skill folder after install)`);
     }
-    return { kind, name, spec: 'custom', parsed: { type: 'custom', install: obj.install, check: obj.check, path: obj.path } };
+    return { kind, name, spec: 'custom', parsed: { type: 'custom', install: obj.install || undefined, check: obj.check, path: obj.path } };
   }
   if (obj.install || obj.check || obj.path) {
     throw new Error(`${label}: "install", "check" and "path" cannot be combined with "source"`);
@@ -270,8 +271,11 @@ export function parseDeclaredSources(manifest: Partial<AgentPackageManifest> | n
   return { sources, errors };
 }
 
+/** Declared sources of the hub, minus the MCP servers this machine ignores (they stay in the files). */
 export function loadDeclaredSources(hub: string): DeclaredSources {
-  return parseDeclaredSources(loadManifest(hub));
+  const all = parseDeclaredSources(loadManifest(hub));
+  const ignored = ignoredNames(hub, 'mcp');
+  return ignored.size === 0 ? all : { ...all, sources: all.sources.filter((d) => !(d.kind === 'mcp' && ignored.has(d.name))) };
 }
 
 // ---- Lockfile ----

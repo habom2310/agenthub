@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_MANIFEST_MCP, getEffectiveManifest, type AgentPackageManifest } from './manifest.js';
 import { STANDARD_IGNORE_ENTRIES } from './git-sync.js';
+import { ignoredNames } from './local.js';
 import { parseDeclaredSources, type SourceKind } from './sources.js';
 import { estimateTokens } from './token-budget.js';
 import { parseFrontmatter } from './projector.js';
@@ -438,14 +439,14 @@ function analyzeSources(manifest: AgentPackageManifest): { sources: SourceAnalys
     const p = d.parsed;
     const commands: string[] = [];
     let riskLevel: SourceAnalysis['riskLevel'] = 'LOW';
-    const starter = d.kind === 'mcp' ? (DEFAULT_MANIFEST_MCP as Record<string, { install: string; check: string }>)[d.name] : undefined;
+    const starter = d.kind === 'mcp' ? (DEFAULT_MANIFEST_MCP as Record<string, { install?: string; check: string }>)[d.name] : undefined;
     if (p.type === 'custom' && starter && starter.install === p.install && starter.check === p.check) {
       // the starter declaration every new hub ships with, not something the user added
-      commands.push(p.check, p.install);
+      commands.push(p.check, ...(p.install ? [p.install] : []));
     } else if (p.type === 'custom') {
-      commands.push(p.check, p.install);
+      commands.push(p.check, ...(p.install ? [p.install] : []));
       riskLevel = 'HIGH';
-      warnings.push(`${d.kind}.${d.name} runs custom commands (check: ${p.check}; install: ${p.install})`);
+      warnings.push(`${d.kind}.${d.name} runs custom commands (check: ${p.check}${p.install ? `; install: ${p.install}` : ''})`);
     } else if ((p.type === 'github' || p.type === 'git' || p.type === 'local') && p.build) {
       commands.push(p.build);
       riskLevel = 'MEDIUM';
@@ -635,7 +636,9 @@ export function analyzePackage(packageDir: string, fallbackName?: string): Packa
   if (mcpConfigFile) {
     const { servers, warnings: parseWarnings } = parseMcpServers(mcpConfigFile);
     topLevelWarnings.push(...parseWarnings);
+    const ignored = ignoredNames(packageDir, 'mcp');
     for (const [name, config] of Object.entries(servers)) {
+      if (ignored.has(name)) continue;
       mcpServers.push(analyzeMcpServer(name, config));
     }
   }

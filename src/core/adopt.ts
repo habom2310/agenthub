@@ -6,6 +6,7 @@ import { isLinkTo } from './linker.js';
 import { setDeclaredSource, type SourceSpec } from './manifest.js';
 import { MCP_PLATFORMS, MCP_PLATFORM_IDS, isDisabled } from './mcp-platforms.js';
 import { contractPaths, expandServerPaths, getMcpStatus, normalizeServerForHub, readJsonSafely, type McpServerConfig } from './mcp-sync.js';
+import { ignoredNames } from './local.js';
 import { assistantSkillRoots } from './skill-check.js';
 import { loadDeclaredSources, parseSourceSpec, type SourceKind } from './sources.js';
 
@@ -13,11 +14,11 @@ import { loadDeclaredSources, parseSourceSpec, type SourceKind } from './sources
 export interface AdoptProposal {
   /** Short text: the source it would declare */
   label: string;
-  /** The declaration; for custom sources `install` may be empty until the user supplies it */
+  /** The declaration; a custom source has no `install` unless the user (or an inference) supplies one */
   spec: SourceSpec;
   /** Safe to apply without asking: the source was read from the item itself */
   confident: boolean;
-  /** Missing input the user must give before it can be applied */
+  /** Input the user must give before it can be applied (an `install` may be left empty: check-only) */
   needs?: 'install' | 'build';
   /** Copy `from` into the hub at `to`, then move the original into hub/backups/adopt-<ts>/ */
   move?: { from: string; to: string };
@@ -340,10 +341,10 @@ function skillProposal(seen: SkillSeen[], home: string, hub: string): Pick<Adopt
     return {
       proposal: {
         label: `custom (check: SKILL.md at ${tilde(real, home)})`,
-        spec: { install: '', check: `test -f ${shellPath(path.join(real, 'SKILL.md'), home)}`, path: tilde(real, home) },
+        spec: { check: `test -f ${shellPath(path.join(real, 'SKILL.md'), home)}`, path: tilde(real, home) },
         confident: false,
         needs: 'install',
-        note: 'managed by another tool: tell agenthub how to install it',
+        note: 'managed by another tool: add an install command, or leave it check-only (then you install it yourself on a new machine)',
       },
     };
   }
@@ -388,7 +389,7 @@ function findScript(cfg: McpServerConfig): string | null {
 /** A binary managed by a tool or package manager, not a script of the user's own. */
 export function isToolBinPath(real: string, home: string): boolean {
   const posix = real.split(path.sep).join('/');
-  if (/\/node_modules\/\.bin\//.test(posix) || /\/(\.?venvs?|pipx\/venvs\/[^/]+)\/(bin|Scripts)\//.test(posix)) return true;
+  if (/\/lib\/node_modules\/(?:@[\w.-]+\/)?[\w.-]+\//.test(posix) || /\/node_modules\/\.bin\//.test(posix) || /\/(\.?venvs?|pipx\/venvs\/[^/]+)\/(bin|Scripts)\//.test(posix)) return true;
   if (/^\/(opt\/homebrew|usr\/local\/Cellar|home\/linuxbrew\/\.linuxbrew)\//.test(posix)) return true;
   const known = ['.local/bin', '.cargo/bin', '.bun/bin', '.npm-global', '.deno/bin', '.local/share/pipx'].map((d) => path.join(home, d));
   if (known.some((d) => isWithin(d, real))) return true;
@@ -438,6 +439,30 @@ function uvxSource(args: string[]): string | null {
   return m ? `pypi:${m[1]}${m[2] ? `@${m[2]}` : ''}` : null;
 }
 
+/** The package manager install for a file inside a pipx venv or the npm global prefix. Reads only. */
+function toolPackage(real: string): { install: string; how: string } | null {
+  const posix = real.split(path.sep).join('/');
+  const venv = /\/pipx\/venvs\/([A-Za-z0-9][\w.-]*)\//.exec(posix);
+  let pipx = venv?.[1];
+  if (!pipx) {
+    try {
+      const fd = fs.openSync(real, 'r');
+      try {
+        const buf = Buffer.alloc(512);
+        const head = buf.toString('utf-8', 0, fs.readSync(fd, buf, 0, 512, 0)).split(/\r?\n/)[0].replace(/\\/g, '/');
+        pipx = /^#!.*\/pipx\/venvs\/([A-Za-z0-9][\w.-]*)\//.exec(head)?.[1];
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      // unreadable: no inference
+    }
+  }
+  if (pipx) return { install: `pipx install ${pipx}`, how: 'a pipx venv script' };
+  const npm = /\/lib\/node_modules\/((?:@[A-Za-z0-9][\w.-]*\/)?[A-Za-z0-9][\w.-]*)\//.exec(posix)?.[1];
+  return npm ? { install: `npm install -g ${npm}`, how: 'an npm global package' } : null;
+}
+
 function mcpProposal(name: string, cfg: McpServerConfig, home: string, hub: string): Pick<AdoptItem, 'proposal' | 'report'> {
   if (typeof cfg.url === 'string' && !cfg.command) return { report: 'remote server (url), nothing to install' };
   const command = typeof cfg.command === 'string' ? cfg.command : '';
@@ -458,14 +483,20 @@ function mcpProposal(name: string, cfg: McpServerConfig, home: string, hub: stri
   if (script) {
     const real = realOf(script) ?? script;
     if (isToolBinPath(real, home)) {
-      const base = path.basename(real);
+      const base = path.basename(script);
+      const pkg = toolPackage(real);
+      // the command itself is the binary and its bare name finds the same file: a portable command
+      const found = script === cfg.command ? findExecutable(base) : null;
+      const portable = found !== null && (realOf(found) ?? found) === real;
+      const where = `${tilde(real, home)} is a program managed by a tool, so it is not moved into the hub`;
       return {
         proposal: {
-          label: `custom (check: command -v ${base})`,
-          spec: { install: '', check: `command -v ${shq(base)}` },
+          label: `custom (${pkg ? `${pkg.install}; ` : ''}check: command -v ${base})`,
+          spec: { ...(pkg ? { install: pkg.install } : {}), check: `command -v ${shq(base)}` },
           confident: false,
-          needs: 'install',
-          note: `${tilde(real, home)} is a program managed by a tool, so it is not moved into the hub`,
+          needs: pkg ? undefined : 'install',
+          ...(portable ? { rewrite: { from: script, to: base } } : {}),
+          note: [where, portable ? `the hub command becomes "${base}" (found on PATH, same file)` : '', pkg ? `${pkg.how}; confirm it before accepting` : ''].filter(Boolean).join('; '),
         },
       };
     }
@@ -504,10 +535,10 @@ function mcpProposal(name: string, cfg: McpServerConfig, home: string, hub: stri
       return {
         proposal: {
           label: `custom (check: ${tilde(real, home)} exists)`,
-          spec: { install: '', check: `test -e ${shellPath(real, home)}` },
+          spec: { check: `test -e ${shellPath(real, home)}` },
           confident: false,
           needs: 'install',
-          note: `${tilde(dir, home)} holds other files too, so the script is not moved: tell agenthub how to install it`,
+          note: `${tilde(dir, home)} holds other files too, so the script is not moved: add an install command, or leave it check-only`,
         },
       };
     }
@@ -515,7 +546,7 @@ function mcpProposal(name: string, cfg: McpServerConfig, home: string, hub: stri
       return {
         proposal: {
           label: `custom (check: ${tilde(real, home)} exists)`,
-          spec: { install: '', check: `test -e ${shellPath(real, home)}` },
+          spec: { check: `test -e ${shellPath(real, home)}` },
           confident: false,
           needs: 'install',
         },
@@ -528,7 +559,7 @@ function mcpProposal(name: string, cfg: McpServerConfig, home: string, hub: stri
   return {
     proposal: {
       label: `custom (check: command -v ${bare})`,
-      spec: { install: '', check: isAbs(command) ? `test -x ${shellPath(command, home)}` : `command -v ${shq(command)}` },
+      spec: { check: isAbs(command) ? `test -x ${shellPath(command, home)}` : `command -v ${shq(command)}` },
       confident: false,
       needs: 'install',
       note: onPath ? undefined : `${command} was not found on this machine's PATH`,
@@ -543,7 +574,9 @@ export function scanAdoptable(homeDir?: string, hubDir?: string): AdoptItem[] {
   const home = homeDir || getHomeDir();
   const hub = hubDir || getHubDir();
   const declared = loadDeclaredSources(hub).sources;
-  const isDeclared = (kind: SourceKind, name: string): boolean => declared.some((d) => d.kind === kind && d.name === name);
+  const ignored = { skills: ignoredNames(hub, 'skills'), mcp: ignoredNames(hub, 'mcp') };
+  const isDeclared = (kind: SourceKind, name: string): boolean =>
+    ignored[kind].has(name) || declared.some((d) => d.kind === kind && d.name === name);
   const items: AdoptItem[] = [];
 
   const byName = new Map<string, SkillSeen[]>();
@@ -691,7 +724,6 @@ function backupHubSkillFolder(hub: string, name: string): string | null {
 export function applyProposal(item: AdoptItem, proposal: AdoptProposal, homeDir: string, hubDir: string): AdoptApplied {
   const detail: string[] = [];
   const decl = parseSourceSpec(item.kind, item.name, proposal.spec); // validates before anything is written
-  if (decl.parsed.type === 'custom' && !decl.parsed.install) throw new Error('no install command given');
 
   if (item.kind === 'skills') {
     if (proposal.move) {
@@ -744,9 +776,8 @@ async function resolveInteractive(item: AdoptItem, prompter: AdoptPrompter): Pro
 
   const proposal = item.proposal as AdoptProposal;
   if (proposal.needs === 'install' && typeof proposal.spec === 'object') {
-    const install = (await prompter.ask('install command (run on a new machine when the check fails; empty to skip): ')).trim();
-    if (!install) return null;
-    return { ...proposal, spec: { ...proposal.spec, install } };
+    const install = (await prompter.ask('install command (run on a new machine when the check fails; empty: check-only, you install it yourself): ')).trim();
+    return install ? { ...proposal, spec: { ...proposal.spec, install } } : proposal;
   }
   if (proposal.needs === 'build') {
     const build = (await prompter.ask('build command to run in the checkout (empty for none): ')).trim();

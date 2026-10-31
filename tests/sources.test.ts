@@ -67,7 +67,7 @@ describe('parseSourceSpec', () => {
     ['skills', 'a', 'pypi:pkg', 'only supported for MCP'],
     ['mcp', 'a', 'npm:pkg#sub', 'only supported for skills'],
     ['skills', 'a', { install: 'i', check: 'c' }, 'needs "path"'],
-    ['mcp', 'a', { install: 'i' }, 'needs both'],
+    ['mcp', 'a', { install: 'i' }, 'needs a "check" command'],
     ['skills', 'a', { source: 'local', build: 'x' }, 'only supported for MCP'],
     ['mcp', 'a', { source: 'npm:p', build: 'x' }, '"build" is only supported'],
     ['mcp', 'a', { source: 'npm:p', ref: 'x' }, '"ref" is only supported'],

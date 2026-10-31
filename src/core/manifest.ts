@@ -198,3 +198,30 @@ export function setDeclaredSource(
   data[kind] = { ...section, [name]: spec };
   safeWriteFile(manifestPath, JSON.stringify(data, null, 2) + '\n');
 }
+
+/**
+ * Removes skills[name] or mcp[name] from the hub agenthub.json when `matches` accepts
+ * the current declaration. An emptied section is dropped. Returns whether it removed.
+ */
+export function removeDeclaredSource(
+  dir: string,
+  kind: 'skills' | 'mcp',
+  name: string,
+  matches: (spec: unknown) => boolean
+): boolean {
+  const manifestPath = path.join(dir, 'agenthub.json');
+  let data: Record<string, any>;
+  try {
+    data = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+  } catch {
+    return false;
+  }
+  const section = data?.[kind];
+  if (!section || typeof section !== 'object' || Array.isArray(section) || !(name in section) || !matches(section[name])) {
+    return false;
+  }
+  delete section[name];
+  if (Object.keys(section).length === 0) delete data[kind];
+  safeWriteFile(manifestPath, JSON.stringify(data, null, 2) + '\n');
+  return true;
+}

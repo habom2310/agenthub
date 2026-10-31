@@ -81,6 +81,9 @@ npx @habom2310/agenthub setup
 1. **Scaffolds** the central `~/.agenthub` directory with starter heuristics, templates, and subagents (while creating a timestamped backup of existing rules and config files such as `CLAUDE.md`, `GEMINI.md`, `AGENTS.md` and `settings.json`).
 2. **Auto-wires all detected assistants**: creates directory junctions for shared skills (`~/.claude/skills`, `~/.gemini/config/skills.json`, `.codex/skills`, etc.), compiles and projects unified markdown rules (`GEMINI.md`, `CLAUDE.md`, `AGENTS.md`, Cursor MDC rules), and synchronizes MCP server definitions. An existing skills folder is copied into the hub and renamed to `skills.old`; if `skills.old` already exists, it is kept and the new backup goes to a timestamped `skills.old.<YYYYMMDD_HHMMSSZ>`. `agenthub uninstall` restores `skills.old` (the first backup); timestamped backups stay in place for you to restore or delete by hand.
 A new hub declares its starter MCP server `codegraph` with a custom source (`check: codegraph --version`, `install: npm install -g @colbymchenry/codegraph`), so `setup` offers to install it as part of the install plan.
+If an assistant already has its own `codegraph` entry and the hub still has the untouched starter, your entry wins.
+`setup` ingests it into the hub (recorded as ingested from that assistant), replaces the starter, and drops the starter's source declaration from `agenthub.json` when that is untouched too.
+A starter you edited is never replaced.
 3. **Validates system health**: verifies all junctions, rule files, and MCP configs. When you approved the install plan or passed `--yes`, it also starts each MCP server and lists its tools (see [Health checks](#health-checks-agenthub-doctor)); otherwise it skips that step and tells you to run `agenthub doctor`.
 
 ### Handling Blockers
@@ -117,7 +120,7 @@ Your configuration lives in a central hub (`~/.agenthub` or `$AGENTHUB_HUB`):
 │   └── servers/<name>/    # Self-built MCP servers (tracked)
 ├── skills/                # Self-built skills (tracked) plus symlinks to installed third-party skills (ignored)
 ├── vendor/                # Third-party skill/MCP checkouts (gitignored, rebuilt by `agenthub install`)
-└── export/                # Web assistant prompts (ChatGPT, Claude Projects)
+└── export/                # Generated web assistant prompts (ChatGPT, Claude Projects): local, gitignored, untracked on push
 ```
 
 ---
@@ -175,6 +178,8 @@ Only an explicit `agenthub mcp sync --force` overwrites it, after copying each f
 `~/.agenthub/mcp/origins.json` records which assistant each hub server was ingested from (`from`), where agenthub wrote it (`to`, recorded only after a successful write) and where an identical entry was already there before agenthub (`pre`).
 It describes this machine, so the hub's `.gitignore` excludes it.
 A hub from before this file existed has no record, so entries it wrote earlier show as conflicts until you run `agenthub mcp sync --force` once.
+Every conflict message gives the fix: `agenthub mcp sync --force` (the hub's version wins, a backup is kept) or rename one of the two entries.
+`agenthub doctor --fix` never forces.
 `${VAR}` in a server is written the way each assistant documents: Claude takes it as is, Cursor gets `${env:VAR}`, and Gemini expands it only in `env`.
 Codex, Windsurf and Copilot CLI document no `${VAR}` expansion, so the server would receive the text literally, and `agenthub doctor` warns, naming the assistant and the variable.
 A server that is disabled on an assistant (`enabled = false`, `disabled: true`) is not reported as untracked.
@@ -203,8 +208,16 @@ Results are grouped as `[PASS]`, `[WARN]` and `[FAIL]` with a one-line reason, a
 
 - **Setup**: links, rules and MCP registry sync, for every detected assistant.
 - **MCP servers**: each hub server is started as the assistant would start it (`${HOME}`, `${HUB}` and `${VAR}` expanded). A stdio server is spawned, sent `initialize` and `notifications/initialized`, asked for `tools/list`, and its whole process tree is stopped. An HTTP server gets the same calls over POST (JSON or SSE responses, `Mcp-Session-Id` kept). The result is `PASS` with the tool count, `WARN` when only credentials are missing (an unresolved `${VAR}` in `env` or `headers`, or HTTP 401/403, "needs auth"), or `FAIL` with the reason: command not found, exit code with the last stderr lines, timeout, protocol error, or HTTP status. Values from `env`, `headers` and the URL's credentials and query are masked as `***` in every message, including `--json`. The server's stdout is capped at 4 MB. Up to four servers run at once, each with a 20 second limit (`--timeout <seconds>`).
-- **Skills**: every hub skill and each assistant's own skills folder. `SKILL.md` must exist with valid frontmatter, a `name` that is lowercase letters, digits and hyphens and matches the folder, and a `description` of at most 1024 characters. Linked relative files must exist (`WARN`), files under `scripts/` should be executable on POSIX (`WARN`), the skill must resolve through every assistant path (`FAIL`), and a name that one assistant loads twice is a `WARN`.
+- **Skills**: every hub skill and each assistant's own skills folder. `SKILL.md` must exist with valid frontmatter, a `name`, and a `description` of at most 1024 characters.
+A name with underscores or capitals loads in Claude Code, so it is a `WARN` that it is not portable to some assistants (the Agent Skills format uses lowercase letters, digits and single hyphens), and a name that differs from the folder is a `WARN` too, because Claude Code identifies a skill by its folder.
+A name with spaces is a `FAIL`.
+Linked relative files must exist (`WARN`), files under `scripts/` that start with `#!` should be executable on POSIX (`WARN`; data files and scripts run as `python x.py` are not checked), the skill must resolve through every assistant path (`FAIL`), and a name that one assistant loads twice is a `WARN`.
+- **Assistant-managed collections**: the known folders Claude's `synced/<org>/<skill>/` and Codex's `.system/` and `codex-primary-runtime/` are reported as `[PASS] collection <name>: N nested skills (managed by <assistant>)`.
+  Any other dot-directory is `[INFO]` ("not committed").
+  Any other top-level folder with nested skills but no `SKILL.md` is a `WARN` ("looks like a skill collection; not managed by agenthub, will be committed") and is not ignored.
+  A top-level folder with neither a `SKILL.md` nor nested skills is still a `FAIL`.
 - **Declared sources**: what `agenthub.json` declares, `agenthub.lock.json` pins and the machine has installed must agree. A declared custom `check` command is run and must exit 0.
+  A custom source without an `install` command whose check fails is a `WARN` ("install it yourself, then re-run"), not a `FAIL`.
 
 Starting a server or running a `check` executes a command that your hub declares, so these steps run only because you asked for them:
 - `agenthub doctor` runs them. `--no-functional` skips them (the file checks above still run).
@@ -227,16 +240,24 @@ It scans every detected assistant's skills folders and MCP configs (and `skills/
 | Found | Proposed source |
 |---|---|
 | Skill (link or folder) inside a git checkout with a remote | `github:owner/repo#subpath`, or `git:<url>#subpath`, credentials removed, pinned to the checkout's commit (`ref`). The commit and the remote's last fetched HEAD are read from `.git` files; git is never run. It is confident only when both are the same commit. Local edits are not checked. |
-| Skill linked into a tool-managed folder such as `~/.local/share/<tool>/skills/...` | `custom` with `check: test -f <path>/SKILL.md` and `path`; you supply the `install` command |
+| Skill linked into a tool-managed folder such as `~/.local/share/<tool>/skills/...` | `custom` with `check: test -f <path>/SKILL.md` and `path`; add an `install` command, or leave it check-only |
+| Top-level `skills/` folder with nested skills, or a dot-directory (`synced/`, `.system/`) | skipped: an assistant manages it (see [Git](#7b-skills-and-mcp-servers-as-dependencies)) |
 | Plain skill folder, no git | self-built (moved into `skills/` as `local`) or a source you enter |
 | Claude Code plugin skill (under `~/.claude/plugins`) | reported only; optionally `custom` with `claude plugin install <plugin>@<marketplace>` |
 | MCP `npx [-y] pkg[@version]` | `npm:pkg[@version]` |
 | MCP `uvx pkg[==version]` | `pypi:pkg[@version]` |
 | MCP command inside a git checkout | `git:` / `github:`, paths rewritten to `${HUB}/vendor/mcp/<name>`; asks for a build command when the command runs build output |
-| MCP command on `PATH` | `custom` with `check: command -v <cmd>`; you supply the `install` command |
+| MCP command on `PATH` | `custom` with `check: command -v <cmd>`; add an `install` command, or leave it check-only |
+| MCP program in a pipx venv (the file or its shebang is under `pipx/venvs/<pkg>/`) | `custom` with `install: pipx install <pkg>` and `check: command -v <cmd>`, not confident |
+| MCP program in an npm global package (`<prefix>/lib/node_modules/<pkg>/`) | `custom` with `install: npm install -g <pkg>` and `check: command -v <cmd>`, not confident |
 | MCP script in a folder of its own under your home folder, not in git (the folder has a `package.json` or `pyproject.toml`, or is named after the server) | the whole folder is moved to `mcp/servers/<name>/` as `local` |
-| MCP script in a shared folder such as `~/.claude/hooks`, or a program in a `PATH` or tool bin folder (`~/.local/bin`, `~/.cargo/bin`, `~/.bun/bin`, `~/.npm-global`, pipx or venv `bin`, Homebrew, `node_modules/.bin`) | never moved: `custom` with a check, and you supply the `install` command |
+| MCP script in a shared folder such as `~/.claude/hooks`, or a program in a `PATH` or tool bin folder (`~/.local/bin`, `~/.cargo/bin`, `~/.bun/bin`, `~/.npm-global`, pipx or venv `bin`, Homebrew, `node_modules/.bin`) | never moved: `custom` with a check, and an `install` command you add (or leave it check-only) |
 | MCP server with a `url` | nothing to adopt |
+
+When the MCP command is a `PATH` or tool bin program and its bare name finds the same file on `PATH`, accepting the proposal also rewrites the hub server's command to the bare name, so the entry works on a machine with a different home folder.
+The note says so.
+If the bare name does not resolve to the same file, the path is kept.
+An empty answer to the install question declares a check-only source: the object has no `install` key.
 
 ```bash
 agenthub adopt --dry-run   # print what was found and the proposed agenthub.json entries, change nothing
@@ -249,6 +270,25 @@ After declaring items, `adopt` runs the normal install flow (one plan, one conse
 Files are never deleted: the original of anything moved is kept in `backups/adopt-<timestamp>/` in the hub (not next to it, where skill loaders would still find it), and so is a hub folder that a link replaces.
 A custom skill `path` is checked after following symlinks.
 It may point inside the hub, non-hidden folders of your home, `~/.local/share/<tool>/skills/`, `~/.claude/plugins/` or `~/.agents/skills/`, and an existing target must contain a `SKILL.md`.
+
+#### Keeping work-only items out of the hub: `agenthub ignore`
+
+`~/.agenthub/local.json` is a machine-local ignore list (the hub `.gitignore` excludes it): `{ "ignore": { "mcp": ["entain-gitlab"], "skills": [] } }`, names only, exact match.
+
+```bash
+agenthub ignore mcp entain-gitlab atlassian   # add names and clean the hub
+agenthub ignore skill work-only
+agenthub ignore --remove mcp atlassian        # stop ignoring
+agenthub ignore                               # list
+```
+
+An ignored MCP server is never ingested from any assistant, and sync never writes, removes or reports it (untracked, drifted or conflict).
+The assistants keep their own copies untouched.
+If the hub already had it, `agenthub ignore mcp <name>` itself removes it once (and prints that) from `mcp/servers.json`, `origins.json`, the `agenthub.json` declarations and the lockfile.
+After that, sync, install and doctor only filter the name when they read, and never rewrite those shared files for it, so a `pull` that brings the entry back leaves the hub clean.
+Names must match `^[A-Za-z0-9_][\w.-]*$`.
+`adopt` skips it, `doctor` does not probe it and lists it once as `[INFO] ignored (local): ...`, and `share` and the registry payload never include it.
+An ignored skill still links into the assistants, but it goes to `.git/info/exclude` so it is never committed, and `adopt` skips it.
 
 ### 4. Package Registry & Discovery
 
@@ -436,10 +476,13 @@ Declare sources in `~/.agenthub/agenthub.json` under the `skills` and `mcp` keys
 | `git:<url>[#subpath]` | Same as `github:` for any git URL | Same as `github:` |
 | `npm:pkg@range[#subpath]` | `npm pack` extracted into `vendor/skills/<name>/` | Runs through `npx -y pkg@<locked version>` |
 | `pypi:pkg@range` | Not supported | Runs through `uvx pkg==<locked version>` |
-| `{ "install", "check", "path"? }` | `path` is the skill folder after install (see below) | Nothing to link |
+| `{ "check", "install"?, "path"? }` | `path` is the skill folder after install (see below) | Nothing to link |
 
 `github:` and `git:` sources accept `{ "source": "...", "ref": "<branch, tag or sha>" }`.
 A custom source runs `check` first and runs `install` only if `check` fails (exit code 0 means installed).
+`install` is optional.
+Without it, a failing check is shown as `[manual]` ("install it yourself, then re-run"), counts as a warning, and never blocks `setup`, `pull` or `install` (exit code stays 0).
+Use this for tool-managed items such as a skill that another tool installs.
 A custom skill `path` may start with `~`, and a relative path is relative to the hub.
 It must be inside the hub or inside your home folder, and not home itself or a dot-directory such as `~/.ssh`, except `~/.local/share/<tool>/skills/`, `~/.claude/plugins/` and `~/.agents/skills/`. Symlinks are followed before the check, and an existing target must contain a `SKILL.md`.
 Version ranges for `npm:` sources are limited to semver characters (letters, digits and `.^~<>=*+-`), so use `^1.2`, `~1.2`, an exact version or a tag.
@@ -465,8 +508,9 @@ agenthub update review fetch  # re-resolve only these items
 
 `install` shows the full plan, with the exact command for every item, and asks one y/N question.
 Planning runs nothing that the hub declares.
-A custom item lists both its `check` and its `install` command, and `check` runs only after you approve, so an already installed tool is left alone.
+A custom item lists both its `check` and its `install` command and is labelled `[check]`, because its state is only known once `check` runs after you approve.
 Because of that, custom items appear in the plan on every run.
+Afterwards each one is reported as `✓ <name>: already installed (check passed)` or `✓ Installed <item>`, and only real installs count as new.
 Without a terminal and without `--yes`, nothing is installed and the items are reported as pending (exit code 1).
 Git, npm and uv are only needed for the sources that use them, and a missing tool is reported for that item only.
 One failing item does not stop the others, and `agenthub` never runs `sudo`.
@@ -475,7 +519,13 @@ Git, npm and uv commands never go through a shell, and lockfile commits and vers
 A local MCP `build` reruns when the build string or the folder's contents change (`node_modules`, `.git` and common build output folders are ignored).
 
 **Git.**
-`vendor/` is gitignored, and every installed skill symlink in `skills/` is listed in a managed block of the hub `.gitignore`.
+The committed `.gitignore` is the same on every machine, so it only holds entries that do not depend on what exists on disk.
+Static entries: `vendor/`, `export/` (generated output), `local.json`, and the assistant-managed collections `skills/synced/`, `skills/codex-primary-runtime/` and `skills/.*/` (dot-directories such as `.system/`).
+They keep working where they are through the link, but they are never committed, and a new machine gets them from the assistant itself.
+The managed block lists, by declared name, every skill symlink agenthub creates from `agenthub.json` (vendored, or a custom `path`).
+A block from an older version that still lists machine-specific entries is rewritten once by the next `install`, `setup` or `pull`.
+Anything machine-specific goes to a section of `.git/info/exclude` instead (never committed): locally ignored skills and any skill symlink or junction that points outside the hub, so a link migrated from an assistant folder never reaches another machine as a dangling absolute path.
+Ignore rules do not affect files git already tracks, so `push` also runs `git rm --cached` on collections, ignored skills, such links and `export/` that an earlier commit contained, prints what it stopped tracking, and leaves the files on disk.
 Self-built skills are committed as usual.
 The share scan, the registry payload and `info` do not read `vendor/`, and they report the declared sources instead.
 

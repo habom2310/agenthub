@@ -4,7 +4,7 @@ import yaml from 'yaml';
 import { isJunctionOrSymlink } from '../utils/fs.js';
 import { SKILL_PLATFORMS } from './detector.js';
 
-export type CheckLevel = 'PASS' | 'WARN' | 'FAIL';
+export type CheckLevel = 'PASS' | 'INFO' | 'WARN' | 'FAIL';
 
 export interface SkillIssue {
   level: Exclude<CheckLevel, 'PASS'>;
@@ -12,6 +12,8 @@ export interface SkillIssue {
 }
 
 const NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+// what Claude Code loads without complaint: word characters, dots and hyphens
+const CLAUDE_NAME_RE = /^\w[\w.-]*$/;
 const MAX_NAME = 64;
 const MAX_DESCRIPTION = 1024;
 
@@ -54,6 +56,16 @@ function listFiles(dir: string): string[] {
   return out;
 }
 
+function hasShebang(file: string): boolean {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.alloc(2);
+    return fs.readSync(fd, buf, 0, 2, 0) === 2 && buf.toString('latin1') === '#!';
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /** Validates one skill folder. `folderName` is the name it is linked under. */
 export function checkSkillDir(dir: string, folderName: string): SkillIssue[] {
   const issues: SkillIssue[] = [];
@@ -73,9 +85,15 @@ export function checkSkillDir(dir: string, folderName: string): SkillIssue[] {
     if (typeof name !== 'string' || !name.trim()) {
       issues.push({ level: 'FAIL', message: 'frontmatter has no name' });
     } else {
-      if (!NAME_RE.test(name)) issues.push({ level: 'FAIL', message: `name "${name}" must be lowercase letters, digits and single hyphens` });
-      else if (name.length > MAX_NAME) issues.push({ level: 'WARN', message: `name is ${name.length} characters (max ${MAX_NAME})` });
-      if (name !== folderName) issues.push({ level: 'FAIL', message: `name "${name}" does not match the folder name "${folderName}"` });
+      if (!CLAUDE_NAME_RE.test(name)) {
+        issues.push({ level: 'FAIL', message: `name "${name}" must be letters, digits, hyphens or underscores without spaces` });
+      } else if (!NAME_RE.test(name)) {
+        issues.push({ level: 'WARN', message: `name "${name}" loads in Claude Code but is not portable to some assistants (the Agent Skills format uses lowercase letters, digits and single hyphens)` });
+      } else if (name.length > MAX_NAME) {
+        issues.push({ level: 'WARN', message: `name is ${name.length} characters (max ${MAX_NAME})` });
+      }
+      // Claude Code identifies a skill by its folder, so a different name does not stop it loading
+      if (name !== folderName) issues.push({ level: 'WARN', message: `name "${name}" does not match the folder name "${folderName}"` });
     }
     const description = data.description;
     if (typeof description !== 'string' || !description.trim()) {
@@ -89,9 +107,10 @@ export function checkSkillDir(dir: string, folderName: string): SkillIssue[] {
   if (missing.length > 0) issues.push({ level: 'WARN', message: `SKILL.md links to missing file(s): ${missing.join(', ')}` });
 
   if (process.platform !== 'win32') {
+    // only a file that starts with #! is meant to be run directly; data files and `python x.py` scripts are not
     const scripts = listFiles(path.join(dir, 'scripts')).filter((f) => {
       try {
-        return (fs.statSync(f).mode & 0o111) === 0;
+        return (fs.statSync(f).mode & 0o111) === 0 && hasShebang(f);
       } catch {
         return false;
       }
@@ -197,5 +216,71 @@ export function skillResolves(root: string, name: string): { ok: boolean; real: 
     return { ok: true, real };
   } catch {
     return { ok: false, real };
+  }
+}
+
+// ---- assistant-managed collections ----
+
+/** Assistants known to write a skills subfolder themselves. */
+const COLLECTION_OWNERS: Record<string, string> = {
+  synced: 'Claude',
+  '.system': 'Codex',
+  'codex-primary-runtime': 'Codex',
+};
+
+function countNestedSkills(dir: string, depth = 0): number {
+  if (depth > 6) return 0;
+  let n = 0;
+  try {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory() && e.name !== 'node_modules') n += countNestedSkills(path.join(dir, e.name), depth + 1);
+      else if (e.name === 'SKILL.md' && depth > 0) n++;
+    }
+  } catch {
+    // unreadable folder
+  }
+  return n;
+}
+
+export interface SkillCollection {
+  nested: number;
+  owner?: string;
+  /** known: a folder an assistant is known to write; dot: any dot-directory; unknown: nested skills, owner unknown */
+  kind: 'known' | 'dot' | 'unknown';
+}
+
+/**
+ * A top-level skills folder with no SKILL.md of its own: a known assistant-managed
+ * folder (synced/, .system/, codex-primary-runtime/), another dot-directory, or a folder
+ * that holds nested skills (kind "unknown": agenthub does not manage it).
+ * Returns null for a skill, a file, or a folder with none of those.
+ */
+export function skillCollection(skillsDir: string, entry: string): SkillCollection | null {
+  const dir = path.join(skillsDir, entry);
+  try {
+    if (fs.lstatSync(dir).isSymbolicLink() || !fs.statSync(dir).isDirectory()) return null;
+  } catch {
+    return null;
+  }
+  if (fs.existsSync(path.join(dir, 'SKILL.md'))) return null;
+  const nested = countNestedSkills(dir);
+  const owner = COLLECTION_OWNERS[entry];
+  if (owner) return { nested, owner, kind: 'known' };
+  if (entry.startsWith('.')) return { nested, kind: 'dot' };
+  return nested > 0 ? { nested, kind: 'unknown' } : null;
+}
+
+/** Collections agenthub keeps out of git: known owners and dot-directories. */
+export function listSkillCollections(skillsDir: string): string[] {
+  try {
+    return fs
+      .readdirSync(skillsDir)
+      .filter((n) => {
+        const c = skillCollection(skillsDir, n);
+        return c !== null && c.kind !== 'unknown';
+      })
+      .sort();
+  } catch {
+    return [];
   }
 }

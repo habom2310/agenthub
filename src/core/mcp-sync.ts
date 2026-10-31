@@ -2,6 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getUtcTimestamp, safeWriteFile } from '../utils/fs.js';
 import { getHomeDir, getHubDir } from './detector.js';
+import { ignoredNames } from './local.js';
+import { DEFAULT_MANIFEST_MCP, removeDeclaredSource } from './manifest.js';
+import { defaultTemplateServers } from './scaffold.js';
+import { loadLock, saveLock } from './sources.js';
 import {
   MCP_PLATFORMS,
   MCP_PLATFORM_IDS,
@@ -353,14 +357,18 @@ export function getMcpStatus(
     hubRead.data?.mcpServers &&
     typeof hubRead.data.mcpServers === 'object' &&
     !Array.isArray(hubRead.data.mcpServers)
-      ? (hubRead.data.mcpServers as Record<string, McpServerConfig>)
+      ? { ...(hubRead.data.mcpServers as Record<string, McpServerConfig>) }
       : {};
+  const ignored = ignoredNames(hub, 'mcp');
+  for (const n of ignored) delete hubServers[n];
   const expandedHub = expandServers(hubServers, home, hub);
   const origins = readOrigins(hub);
 
   const platforms = {} as Record<McpPlatformId, McpExtraPlatformStatus>;
   for (const id of MCP_PLATFORM_IDS) {
-    platforms[id] = platformStatus(MCP_PLATFORMS[id], readPlatform(MCP_PLATFORMS[id], home), hubServers, expandedHub, origins);
+    const st = platformStatus(MCP_PLATFORMS[id], readPlatform(MCP_PLATFORMS[id], home), hubServers, expandedHub, origins);
+    st.untracked = st.untracked.filter((n) => !ignored.has(n));
+    platforms[id] = st;
   }
   const base = (st: McpExtraPlatformStatus): McpPlatformStatus => ({ path: st.path, exists: st.exists, valid: st.valid, servers: st.servers });
 
@@ -386,12 +394,105 @@ export function getMcpStatus(
   };
 }
 
+/**
+ * The hub still has the scaffold's untouched starter entry for a server (like
+ * codegraph) and an assistant has its own, different entry under that name: the
+ * user's entry wins. It replaces the starter in the hub (recorded as ingested from
+ * that assistant), and the starter's source declaration is dropped from
+ * agenthub.json when that is untouched too. Nothing else is changed.
+ */
+export function adoptStarterOverrides(homeDirOrOptions?: string | { homeDir?: string; hubDir?: string }, hubDir?: string): string[] {
+  const { home, hub } = resolveArgs(homeDirOrOptions, hubDir);
+  const hubFile = path.join(hub, 'mcp', 'servers.json');
+  const read = readJsonSafely<{ mcpServers?: Record<string, McpServerConfig> }>(hubFile);
+  const current = read.data.mcpServers;
+  const defaults = defaultTemplateServers();
+  if (!read.success || !current || typeof current !== 'object' || Array.isArray(current)) return [];
+  const servers = { ...current };
+  const origins = readOrigins(hub);
+  const actions: string[] = [];
+  const ignored = ignoredNames(hub, 'mcp');
+
+  const replaced = new Map<string, string>();
+  const leftAsConflict = new Map<string, string[]>();
+  for (const id of MCP_PLATFORM_IDS) {
+    const platform = MCP_PLATFORMS[id];
+    if (!platform.installed(home)) continue;
+    const state = readPlatform(platform, home);
+    if (!state.valid) continue;
+    for (const [name, native] of Object.entries(state.servers)) {
+      if (!(name in servers) || ignored.has(name) || !(name in defaults) || isDisabled(native)) continue;
+      if (!isConflict(platform, id, name, origins) || !platformDrifted(platform, native, expandServerPaths(servers[name], home, hub))) continue;
+      if (replaced.has(name)) {
+        // an earlier platform's entry already won: this one stays a conflict
+        leftAsConflict.set(name, [...(leftAsConflict.get(name) ?? []), platform.label]);
+      } else if (deepEqual(servers[name], defaults[name])) {
+        servers[name] = normalizeServerForHub(name, platform.fromNative(native), home, hub);
+        origins[name] = { from: [id], to: origins[name]?.to ?? [], pre: origins[name]?.pre ?? [] };
+        replaced.set(name, platform.label);
+        actions.push(`Replaced the starter "${name}" in the hub with ${platform.label}'s own entry`);
+      }
+    }
+  }
+  if (replaced.size === 0) return actions;
+  // servers.json first: if the manifest write fails, the hub still has the user's entry
+  safeWriteFile(hubFile, JSON.stringify({ ...read.data, mcpServers: servers }, null, 2) + '\n');
+  writeOrigins(hub, origins);
+  for (const name of replaced.keys()) {
+    const starter = (DEFAULT_MANIFEST_MCP as Record<string, unknown>)[name];
+    if (starter && removeDeclaredSource(hub, 'mcp', name, (spec) => deepEqual(spec, starter))) {
+      actions.push(`Dropped the starter source declaration for "${name}" from agenthub.json`);
+    }
+  }
+  for (const [name, labels] of leftAsConflict) {
+    actions.push(
+      `[CONFLICT] ${labels.join(', ')} also ${labels.length > 1 ? 'have' : 'has'} a different "${name}" than ${replaced.get(name)}'s, which won: left as is (run \`agenthub mcp sync --force\` to overwrite with the hub's version, a backup is kept, or rename one of them)`
+    );
+  }
+  return actions;
+}
+
+/**
+ * Removes locally ignored servers from the hub files (servers.json, origins.json,
+ * the agenthub.json declarations and the lockfile). The assistants' own copies are never touched.
+ */
+export function purgeIgnoredMcp(hub: string): string[] {
+  const ignored = ignoredNames(hub, 'mcp');
+  const actions: string[] = [];
+  if (ignored.size === 0) return actions;
+  const hubFile = path.join(hub, 'mcp', 'servers.json');
+  const read = readJsonSafely<{ mcpServers?: Record<string, McpServerConfig> }>(hubFile);
+  const servers = read.data.mcpServers;
+  if (read.success && servers && typeof servers === 'object' && !Array.isArray(servers)) {
+    const hit = Object.keys(servers).filter((n) => ignored.has(n));
+    if (hit.length > 0) {
+      const next = Object.fromEntries(Object.entries(servers).filter(([n]) => !ignored.has(n)));
+      safeWriteFile(hubFile, JSON.stringify({ ...read.data, mcpServers: next }, null, 2) + '\n');
+      actions.push(`Removed locally ignored server(s) from the hub: ${hit.join(', ')}`);
+    }
+  }
+  const origins = readOrigins(hub);
+  if (Object.keys(origins).some((n) => ignored.has(n))) {
+    writeOrigins(hub, Object.fromEntries(Object.entries(origins).filter(([n]) => !ignored.has(n))));
+  }
+  for (const n of ignored) {
+    if (removeDeclaredSource(hub, 'mcp', n, () => true)) actions.push(`Dropped the declaration of ignored "${n}" from agenthub.json`);
+  }
+  const lock = loadLock(hub);
+  if (Object.keys(lock.mcp).some((n) => ignored.has(n))) {
+    for (const n of ignored) delete lock.mcp[n];
+    saveLock(hub, lock);
+  }
+  return actions;
+}
+
 export function syncMcpServers(
   homeDirOrOptions?: string | { homeDir?: string; hubDir?: string; force?: boolean },
   hubDir?: string
 ): SyncMcpResult {
   const { home, hub, force } = resolveArgs(homeDirOrOptions, hubDir);
-  const actions: string[] = [];
+  const actions: string[] = adoptStarterOverrides({ homeDir: home, hubDir: hub });
+  const ignored = ignoredNames(hub, 'mcp');
 
   const hubFile = path.join(hub, 'mcp', 'servers.json');
   const hubRead = readJsonSafely(hubFile);
@@ -410,6 +511,14 @@ export function syncMcpServers(
     !Array.isArray(hubRead.data.mcpServers)
       ? { ...hubRead.data.mcpServers }
       : {};
+  // ignored servers stay in the shared file untouched, but sync does not see them
+  const hidden: Record<string, McpServerConfig> = {};
+  for (const n of ignored) {
+    if (n in hubServers) {
+      hidden[n] = hubServers[n];
+      delete hubServers[n];
+    }
+  }
   let hubChanged = false;
   const origins = readOrigins(hub);
   const originsBefore = JSON.stringify(origins);
@@ -423,7 +532,7 @@ export function syncMcpServers(
     states[id] = state;
     if (!state.valid) continue;
     for (const [name, native] of Object.entries(state.servers)) {
-      if (name in hubServers) continue;
+      if (name in hubServers || ignored.has(name)) continue;
       if (isDisabled(native)) {
         actions.push(`[SKIP] Not ingesting disabled server "${name}" from ${platform.label}`);
         continue;
@@ -437,7 +546,7 @@ export function syncMcpServers(
 
   // Save updated hub servers.json
   if (hubChanged || !fs.existsSync(hubFile)) {
-    const hubData = { ...hubRead.data, mcpServers: hubServers };
+    const hubData = { ...hubRead.data, mcpServers: { ...hubServers, ...hidden } };
     safeWriteFile(hubFile, JSON.stringify(hubData, null, 2) + '\n');
     actions.push('Updated hub servers.json');
   }
@@ -458,7 +567,7 @@ export function syncMcpServers(
         const native = state.servers[name];
         if (native && isConflict(platform, id, name, origins) && platformDrifted(platform, native, projectedHub[name])) {
           keep.add(name);
-          actions.push(`[CONFLICT] ${platform.label} has its own "${name}" that differs from the hub: left as is (agenthub mcp sync --force overwrites it)`);
+          actions.push(`[CONFLICT] ${platform.label} has its own "${name}" that differs from the hub: left as is (run \`agenthub mcp sync --force\` to overwrite it with the hub's version, a backup is kept, or rename one of them)`);
         }
       }
     }

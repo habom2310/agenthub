@@ -129,7 +129,7 @@ describe('installer', () => {
     const shell = vi.spyOn(runtime, 'shell').mockReturnValue(ok());
     const plan = await planInstall(hub);
     expect(shell).not.toHaveBeenCalled();
-    expect(plan.actions[0]).toMatchObject({ item: 't', type: 'custom', reason: 'missing' });
+    expect(plan.actions[0]).toMatchObject({ item: 't', type: 'custom', reason: 'check' });
     expect(plan.actions[0].commands).toEqual(['check:   which t', 'install: make install  (only if check fails)']);
   });
 
