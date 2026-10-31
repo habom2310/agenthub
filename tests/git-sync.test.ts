@@ -419,3 +419,22 @@ describe('git-sync', () => {
     });
   });
 });
+
+describe('per-machine state is not committed', () => {
+  it('git ignores mcp/origins.json once the hub .gitignore is written', async () => {
+    const { ensureGitignore } = await import('../src/core/git-sync.js');
+    const { spawnSync } = await import('node:child_process');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenthub-origins-ignore-'));
+    try {
+      spawnSync('git', ['init', '-q'], { cwd: dir });
+      fs.mkdirSync(path.join(dir, 'mcp'));
+      fs.writeFileSync(path.join(dir, 'mcp', 'origins.json'), '{}');
+      fs.writeFileSync(path.join(dir, 'mcp', 'servers.json'), '{}');
+      ensureGitignore(dir);
+      expect(spawnSync('git', ['check-ignore', 'mcp/origins.json'], { cwd: dir }).status).toBe(0);
+      expect(spawnSync('git', ['check-ignore', 'mcp/servers.json'], { cwd: dir }).status).toBe(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

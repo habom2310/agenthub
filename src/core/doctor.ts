@@ -22,8 +22,6 @@ import {
 
 export interface DoctorOptions {
   fix?: boolean;
-  /** With fix: also overwrite MCP entries an assistant has of its own under a hub server's name */
-  force?: boolean;
   homeDir?: string;
   hubDir?: string;
 }
@@ -378,7 +376,7 @@ export function runDoctor(options?: DoctorOptions): DoctorResult {
     const mcpServersFile = path.join(hubDir, 'mcp', 'servers.json');
     const mcpStatus = getMcpStatus(homeDir, hubDir);
     if (!fs.existsSync(mcpServersFile) || !mcpStatus.in_sync) {
-      const syncRes = syncMcpServers({ homeDir, hubDir, force: Boolean(options.force) });
+      const syncRes = syncMcpServers({ homeDir, hubDir });
       repairs.push(...syncRes.actions);
     }
 

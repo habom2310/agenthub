@@ -5,9 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setCustomHome } from '../src/core/detector.js';
 import { MANAGED_BLOCK_END, MANAGED_BLOCK_START, updateManagedIgnoreBlock } from '../src/core/git-sync.js';
 import {
+  checkSubpath,
   describePlan,
   finalizeInstall,
   hasDeclaredSources,
+  isBareHub,
   planInstall,
   runInstall,
   updatePins,
@@ -455,5 +457,61 @@ describe('updateManagedIgnoreBlock', () => {
   it('creates the file when missing', () => {
     updateManagedIgnoreBlock(dir, ['/skills/x']);
     expect(fs.readFileSync(path.join(dir, '.gitignore'), 'utf-8')).toContain('/skills/x');
+  });
+});
+
+describe('a bare hub', () => {
+  it('gets no new files from install, runInstall or finalizeInstall', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agenthub-bare-'));
+    const hub = path.join(tmp, 'hub');
+    fs.mkdirSync(hub, { recursive: true });
+    fs.writeFileSync(path.join(hub, 'agenthub.json'), JSON.stringify({ name: 'bare' }));
+    const list = (): string[] => {
+      const out: string[] = [];
+      const walk = (d: string): void => {
+        for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+          const full = path.join(d, e.name);
+          out.push(path.relative(hub, full));
+          if (e.isDirectory()) walk(full);
+        }
+      };
+      walk(hub);
+      return out.sort();
+    };
+    try {
+      const before = list();
+      expect(isBareHub(hub)).toBe(true);
+      const plan = await planInstall(hub);
+      expect(plan.actions).toEqual([]);
+      runInstall(plan);
+      expect(finalizeInstall(hub)).toEqual([]);
+      expect(list()).toEqual(before);
+
+      // declaring something ends the bare state
+      fs.writeFileSync(path.join(hub, 'agenthub.json'), JSON.stringify({ name: 'bare', skills: {} }));
+      expect(isBareHub(hub)).toBe(false);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('checkSubpath', () => {
+  it('accepts a folder, rejects a missing one and a symlink that leaves the checkout', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agenthub-subpath-'));
+    try {
+      const root = path.join(tmp, 'checkout');
+      fs.mkdirSync(path.join(root, 'skills', 'ok'), { recursive: true });
+      fs.mkdirSync(path.join(tmp, 'outside'));
+      fs.symlinkSync(path.join(tmp, 'outside'), path.join(root, 'skills', 'escape'));
+      fs.symlinkSync(path.join(root, 'skills', 'ok'), path.join(root, 'skills', 'inner-link'));
+      expect(() => checkSubpath(root, 'skills/ok', 'x')).not.toThrow();
+      expect(() => checkSubpath(root, 'skills/inner-link', 'x')).not.toThrow();
+      expect(() => checkSubpath(root, undefined, 'x')).not.toThrow();
+      expect(() => checkSubpath(root, 'skills/nope', 'x')).toThrow('not found');
+      expect(() => checkSubpath(root, 'skills/escape', 'x')).toThrow('leads outside the checkout');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

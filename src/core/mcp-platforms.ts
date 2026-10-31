@@ -39,7 +39,30 @@ export interface McpPlatform {
   fromNative(native: Native): McpServerConfig;
   /** Native keys the hub owns; every other key of an existing entry is kept on sync */
   owned: string[];
+  /**
+   * Fields in which the assistant itself expands ${VAR} (per its docs). Elsewhere a
+   * ${VAR} reaches the server as literal text, which doctor warns about.
+   * Claude: command, args, env, url, headers (https://code.claude.com/docs/en/mcp).
+   * Gemini: the env block only (gemini-cli docs/tools/mcp-server.md).
+   * Cursor: the same five, written as ${env:VAR} (https://cursor.com/docs/mcp).
+   * Codex, Windsurf, Copilot CLI: no ${VAR} expansion is documented.
+   */
+  varFields: VarField[];
 }
+
+export type VarField = 'command' | 'args' | 'env' | 'url' | 'headers' | 'cwd';
+
+const ALL_VAR_FIELDS: VarField[] = ['command', 'args', 'env', 'url', 'headers'];
+
+/** ${NAME} <-> ${env:NAME}, in every string of a server entry. */
+function mapVarSyntax(value: unknown, fn: (s: string) => string): unknown {
+  if (typeof value === 'string') return fn(value);
+  if (Array.isArray(value)) return value.map((v) => mapVarSyntax(v, fn));
+  if (isObj(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, mapVarSyntax(v, fn)]));
+  return value;
+}
+const toCursorVars = (s: string): string => s.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, '${env:$1}');
+const fromCursorVars = (s: string): string => s.replace(/\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, '${$1}');
 
 const isObj = (v: unknown): v is Native => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -82,6 +105,7 @@ export const MCP_PLATFORMS: Record<McpPlatformId, McpPlatform> = {
     writeFiles: (home) => [path.join(home, '.claude.json')],
     installed: (home) => exists(path.join(home, '.claude.json')) || exists(path.join(home, '.claude')),
     owned: [],
+    varFields: ALL_VAR_FIELDS,
     toNative: (cfg) => fillType(cfg) as Native,
     fromNative: (native) => clone(native) as McpServerConfig,
   },
@@ -102,6 +126,7 @@ export const MCP_PLATFORMS: Record<McpPlatformId, McpPlatform> = {
     },
     installed: (home) => exists(path.join(home, '.gemini')),
     owned: [],
+    varFields: ['env'],
     toNative: (cfg) => fillType(cfg) as Native,
     fromNative: (native) => clone(native) as McpServerConfig,
   },
@@ -113,6 +138,7 @@ export const MCP_PLATFORMS: Record<McpPlatformId, McpPlatform> = {
     writeFiles: (home) => [path.join(home, '.codex', 'config.toml')],
     installed: (home) => isDir(path.join(home, '.codex')),
     owned: ['command', 'args', 'env', 'cwd', 'url', 'http_headers'],
+    varFields: [],
     // Codex rejects unknown keys, so only fields it documents are written
     toNative(cfg) {
       const out: Native = {};
@@ -144,11 +170,12 @@ export const MCP_PLATFORMS: Record<McpPlatformId, McpPlatform> = {
     installed: (home) => isDir(path.join(home, '.cursor')),
     // type is not owned: Cursor infers it, and one the user set is kept
     owned: JSON_OWNED.filter((k) => k !== 'type'),
+    varFields: ALL_VAR_FIELDS,
     toNative(cfg) {
-      return without(clone(cfg) as Native, ['type']);
+      return mapVarSyntax(without(clone(cfg) as Native, ['type']), toCursorVars) as Native;
     },
     fromNative(native) {
-      return clone(native) as McpServerConfig;
+      return mapVarSyntax(clone(native), fromCursorVars) as McpServerConfig;
     },
   },
   windsurf: {
@@ -159,6 +186,7 @@ export const MCP_PLATFORMS: Record<McpPlatformId, McpPlatform> = {
     writeFiles: (home) => [path.join(home, '.codeium', 'windsurf', 'mcp_config.json')],
     installed: (home) => isDir(path.join(home, '.codeium', 'windsurf')),
     owned: [...JSON_OWNED, 'serverUrl'],
+    varFields: [],
     toNative(cfg) {
       const out = without(clone(cfg) as Native, ['type', 'url']);
       if (typeof cfg.url === 'string') out.serverUrl = cfg.url;
@@ -179,6 +207,7 @@ export const MCP_PLATFORMS: Record<McpPlatformId, McpPlatform> = {
     writeFiles: (home) => [path.join(home, '.copilot', 'mcp-config.json')],
     installed: (home) => copilotInstalled(home),
     owned: JSON_OWNED,
+    varFields: [],
     // Copilot CLI wants type (local or http) and tools on every entry; an existing tools filter is kept
     toNative(cfg, existing) {
       const out = without(clone(cfg) as Native, ['type']);
@@ -291,37 +320,53 @@ interface TomlSection {
   path: string[];
 }
 
-function parseHeaderPath(header: string): string[] | null {
-  const parts: string[] = [];
+/** The key path of a `[table]` or `[[table]]` header line (quote-aware, so a quoted key may hold `]`), or null. */
+function headerPath(line: string): string[] | null {
   let i = 0;
-  const s = header.trim();
-  while (i < s.length) {
-    while (s[i] === ' ' || s[i] === '\t') i++;
-    if (s[i] === '"' || s[i] === "'") {
-      const quote = s[i];
-      let j = i + 1;
+  const skip = (): void => {
+    while (line[i] === ' ' || line[i] === '\t') i++;
+  };
+  skip();
+  if (line[i] !== '[') return null;
+  i++;
+  const array = line[i] === '[';
+  if (array) i++;
+  const parts: string[] = [];
+  for (;;) {
+    skip();
+    if (line[i] === '"' || line[i] === "'") {
+      const quote = line[i++];
       let val = '';
-      while (j < s.length && s[j] !== quote) {
-        if (quote === '"' && s[j] === '\\' && j + 1 < s.length) {
-          val += s[j + 1];
-          j += 2;
-        } else val += s[j++];
+      while (i < line.length && line[i] !== quote) {
+        if (quote === '"' && line[i] === '\\' && i + 1 < line.length) {
+          val += line[i + 1];
+          i += 2;
+        } else val += line[i++];
       }
-      if (j >= s.length) return null;
+      if (i >= line.length) return null;
+      i++;
       parts.push(val);
-      i = j + 1;
     } else {
-      const m = /^[A-Za-z0-9_-]+/.exec(s.slice(i));
+      const m = /^[A-Za-z0-9_-]+/.exec(line.slice(i));
       if (!m) return null;
       parts.push(m[0]);
       i += m[0].length;
     }
-    while (s[i] === ' ' || s[i] === '\t') i++;
-    if (i >= s.length) break;
-    if (s[i] !== '.') return null;
+    skip();
+    if (line[i] === '.') {
+      i++;
+      continue;
+    }
+    break;
+  }
+  if (line[i] !== ']') return null;
+  i++;
+  if (array) {
+    if (line[i] !== ']') return null;
     i++;
   }
-  return parts.length ? parts : null;
+  skip();
+  return i >= line.length || line[i] === '#' || (line[i] === '\r' && i + 1 >= line.length) ? parts : null;
 }
 
 /** Splits TOML text into table sections by header line, skipping multi-line strings. */
@@ -333,10 +378,9 @@ function tomlSections(lines: string[]): TomlSection[] {
       if (line.includes(multi)) multi = null;
       return;
     }
-    const header = /^\s*\[\[?([^\]]+)\]\]?\s*(?:#.*)?$/.exec(line);
-    if (header) {
-      const p = parseHeaderPath(header[1]);
-      if (p) heads.push({ line: idx, path: p });
+    const p = headerPath(line);
+    if (p) {
+      heads.push({ line: idx, path: p });
       return;
     }
     for (const q of ['"""', "'''"]) {
@@ -350,6 +394,10 @@ function tomlSections(lines: string[]): TomlSection[] {
     while (end > h.line + 1 && /^\s*#/.test(lines[end - 1])) end--;
     return { start: h.line, end, path: h.path };
   });
+}
+
+export function sameEntry(a: unknown, b: unknown): boolean {
+  return deepEq(a, b);
 }
 
 function deepEq(a: unknown, b: unknown): boolean {
@@ -466,13 +514,13 @@ export function writePlatformServers(
       if (entry) servers[n] = entry;
       else delete servers[n];
     }
-    safeWriteFile(file.path, bom + JSON.stringify({ ...file.data, mcpServers: servers }, null, 2) + '\n');
+    safeWriteFile(file.path, bom + JSON.stringify({ ...file.data, mcpServers: servers }, null, 2) + '\n', { mode: 0o600 });
     return { changed: true };
   }
 
   const next = spliceCodexServers(file.text, changes);
   if (next === null) return { changed: false, skipped: `Cannot safely edit ${name}: mcp_servers is not written as [mcp_servers.<name>] tables` };
-  safeWriteFile(file.path, bom + next);
+  safeWriteFile(file.path, bom + next, { mode: 0o600 });
   return { changed: true };
 }
 

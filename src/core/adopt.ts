@@ -71,11 +71,14 @@ const itemId = (i: Pick<AdoptItem, 'kind' | 'name'>): string => `${i.kind === 's
 
 const tilde = (p: string, home: string): string => (isWithin(home, p) && path.resolve(p) !== path.resolve(home) ? '~/' + path.relative(home, p).replace(/\\/g, '/') : p);
 
-const shq = (s: string): string => (/^[\w@%+=:,./~-]+$/.test(s) ? s : `"${s.replace(/(["\\$`])/g, '\\$1')}"`);
+/** Escapes for inside double quotes: " \\ $ and backtick, so a name like $(cmd) stays text. */
+const dq = (s: string): string => s.replace(/(["\\$`])/g, '\\$1');
+
+const shq = (s: string): string => (/^[\w@%+=:,./~-]+$/.test(s) ? s : `"${dq(s)}"`);
 
 /** A path as a shell word: "$HOME/..." inside the home folder so it works on every machine. */
 function shellPath(p: string, home: string): string {
-  return isWithin(home, p) && path.resolve(p) !== path.resolve(home) ? `"$HOME/${path.relative(home, p).replace(/\\/g, '/')}"` : shq(p);
+  return isWithin(home, p) && path.resolve(p) !== path.resolve(home) ? `"$HOME/${dq(path.relative(home, p).replace(/\\/g, '/'))}"` : shq(p);
 }
 
 // ---- git: read the remote from .git/config, never run git ----
@@ -108,6 +111,11 @@ function gitConfigFile(root: string): string | null {
 }
 
 export function readRemoteUrl(root: string): string | null {
+  return readRemote(root)?.url ?? null;
+}
+
+/** origin (or the first remote) from .git/config. */
+export function readRemote(root: string): { name: string; url: string } | null {
   const file = gitConfigFile(root);
   if (!file) return null;
   let text: string;
@@ -127,7 +135,81 @@ export function readRemoteUrl(root: string): string | null {
       if (url && !remotes.has(current)) remotes.set(current, url[1]);
     }
   }
-  return remotes.get('origin') ?? [...remotes.values()][0] ?? null;
+  const name = remotes.has('origin') ? 'origin' : [...remotes.keys()][0];
+  return name ? { name, url: remotes.get(name) as string } : null;
+}
+
+/** The git directory and the directory holding refs (they differ in a worktree). */
+function gitDirs(root: string): { gitDir: string; commonDir: string } | null {
+  const dotGit = path.join(root, '.git');
+  try {
+    if (fs.statSync(dotGit).isDirectory()) return { gitDir: dotGit, commonDir: dotGit };
+    const m = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotGit, 'utf-8'));
+    if (!m) return null;
+    const gitDir = path.resolve(root, m[1].trim());
+    let commonDir = gitDir;
+    try {
+      commonDir = path.resolve(gitDir, fs.readFileSync(path.join(gitDir, 'commondir'), 'utf-8').trim());
+    } catch {
+      // not a linked worktree
+    }
+    return { gitDir, commonDir };
+  } catch {
+    return null;
+  }
+}
+
+function resolveRef(dirs: { gitDir: string; commonDir: string }, ref: string, depth = 0): string | null {
+  if (depth > 5) return null;
+  const read = (p: string): string | null => {
+    try {
+      return fs.readFileSync(p, 'utf-8').trim();
+    } catch {
+      return null;
+    }
+  };
+  const value = read(path.join(dirs.gitDir, ref)) ?? read(path.join(dirs.commonDir, ref));
+  if (value !== null) {
+    if (/^[0-9a-f]{40}$/.test(value)) return value;
+    const sym = /^ref:\s*(.+)$/.exec(value);
+    return sym ? resolveRef(dirs, sym[1].trim(), depth + 1) : null;
+  }
+  const packed = read(path.join(dirs.commonDir, 'packed-refs'));
+  const hit = packed?.split(/\r?\n/).find((l) => l.endsWith(` ${ref}`) && /^[0-9a-f]{40} /.test(l));
+  return hit ? hit.slice(0, 40) : null;
+}
+
+/** The checked-out commit and the remote's last fetched HEAD, read from files; git is never run. */
+export function readCommits(root: string, remoteName: string): { local?: string; remote?: string } {
+  const dirs = gitDirs(root);
+  if (!dirs) return {};
+  let head: string | null = null;
+  try {
+    head = fs.readFileSync(path.join(dirs.gitDir, 'HEAD'), 'utf-8').trim();
+  } catch {
+    return {};
+  }
+  const local = /^[0-9a-f]{40}$/.test(head) ? head : (resolveRef(dirs, head.replace(/^ref:\s*/, '')) ?? undefined);
+  const remote = resolveRef(dirs, `refs/remotes/${remoteName}/HEAD`) ?? undefined;
+  return { local, remote };
+}
+
+/**
+ * The declaration for a checkout: pinned to the local commit when it is known.
+ * Confident only when that commit is what the remote was last seen at. Local
+ * edits cannot be detected without running git, so the note says so.
+ */
+function checkoutSpec(root: string, base: string, remoteName: string, home: string): { spec: SourceSpec; confident: boolean; note: string } {
+  const { local, remote } = readCommits(root, remoteName);
+  const where = `checkout ${tilde(root, home)}`;
+  const short = (c: string): string => c.slice(0, 12);
+  if (!local) return { spec: base, confident: false, note: `${where}: its commit could not be read, so nothing is pinned; local edits not checked` };
+  const spec: SourceSpec = { source: base, ref: local };
+  if (remote && remote === local) {
+    return { spec, confident: true, note: `${where} at ${short(local)}, same as ${remoteName}; pinned to it; local edits not checked` };
+  }
+  const why = remote ? `differs from ${remoteName}'s last fetched ${short(remote)}` : `${remoteName}'s commit is unknown (never fetched?)`;
+  return { spec, confident: false, note: `${where}: local commit ${short(local)} ${why}; pinned to the local commit, which may not exist on the remote; local edits not checked` };
 }
 
 /** Maps a remote URL to a github: or git: source, with credentials removed. Null for local-path remotes. */
@@ -244,12 +326,13 @@ function skillProposal(seen: SkillSeen[], home: string, hub: string): Pick<Adopt
   }
 
   const root = findGitRoot(real, hub);
-  const remote = root ? readRemoteUrl(root) : null;
-  const mapped = remote ? sourceFromRemote(remote) : null;
-  if (root && mapped) {
+  const remote = root ? readRemote(root) : null;
+  const mapped = remote ? sourceFromRemote(remote.url) : null;
+  if (root && remote && mapped) {
     const sub = path.relative(root, real).replace(/\\/g, '/');
-    const spec = mapped.base + (sub ? `#${sub}` : '');
-    return { proposal: { label: spec, spec, confident: true, note: `checkout ${tilde(root, home)}` } };
+    const source = mapped.base + (sub ? `#${sub}` : '');
+    const cs = checkoutSpec(root, source, remote.name, home);
+    return { proposal: { label: source, spec: cs.spec, confident: cs.confident, note: cs.note } };
   }
 
   // a link into something that is not a checkout and not the hub: installed by a tool
@@ -338,10 +421,20 @@ function npxSource(args: string[]): string | null {
   return `npm:${pkg}`;
 }
 
+// uvx flags that take no value; any other flag before the package might consume the next word
+const UVX_NO_VALUE_FLAGS = new Set(['-q', '--quiet', '--isolated', '--no-cache', '--offline']);
+
 function uvxSource(args: string[]): string | null {
-  const pkg = args.find((a) => !a.startsWith('-'));
-  if (!pkg || args.some((a) => a === '--from' || a.startsWith('--from=') || a === '--with')) return null;
-  const m = /^([A-Za-z0-9][\w.-]*)(?:==(\d[\w.+-]*))?$/.exec(pkg);
+  let pkg: string | undefined;
+  for (const a of args) {
+    if (a.startsWith('-')) {
+      if (!UVX_NO_VALUE_FLAGS.has(a)) return null;
+    } else {
+      pkg = a;
+      break;
+    }
+  }
+  const m = pkg ? /^([A-Za-z0-9][\w.-]*)(?:==(\d[\w.+-]*))?$/.exec(pkg) : null;
   return m ? `pypi:${m[1]}${m[2] ? `@${m[2]}` : ''}` : null;
 }
 
@@ -377,19 +470,20 @@ function mcpProposal(name: string, cfg: McpServerConfig, home: string, hub: stri
       };
     }
     const root = findGitRoot(path.dirname(real), hub);
-    const remote = root ? readRemoteUrl(root) : null;
-    const mapped = remote ? sourceFromRemote(remote) : null;
-    if (root && mapped) {
+    const remote = root ? readRemote(root) : null;
+    const mapped = remote ? sourceFromRemote(remote.url) : null;
+    if (root && remote && mapped) {
       const rel = path.relative(root, real).split(path.sep);
       const built = rel.some((seg) => BUILD_DIRS.has(seg));
+      const cs = checkoutSpec(root, mapped.base, remote.name, home);
       return {
         proposal: {
           label: `${mapped.base} (checkout ${tilde(root, home)})`,
-          spec: mapped.base,
-          confident: !built,
+          spec: cs.spec,
+          confident: cs.confident && !built,
           needs: built ? 'build' : undefined,
           rewrite: { from: root, to: `\${HUB}/vendor/mcp/${name}` },
-          note: built ? 'the command runs build output, so it needs a build command' : undefined,
+          note: built ? `the command runs build output, so it needs a build command; ${cs.note}` : cs.note,
         },
       };
     }
@@ -651,9 +745,10 @@ async function resolveInteractive(item: AdoptItem, prompter: AdoptPrompter): Pro
     if (!install) return null;
     return { ...proposal, spec: { ...proposal.spec, install } };
   }
-  if (proposal.needs === 'build' && typeof proposal.spec === 'string') {
+  if (proposal.needs === 'build') {
     const build = (await prompter.ask('build command to run in the checkout (empty for none): ')).trim();
-    return build ? { ...proposal, spec: { source: proposal.spec, build } } : proposal;
+    const base = typeof proposal.spec === 'string' ? { source: proposal.spec } : proposal.spec;
+    return build ? { ...proposal, spec: { ...base, build } } : proposal;
   }
   return proposal;
 }

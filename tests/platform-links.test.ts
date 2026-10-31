@@ -187,4 +187,27 @@ describe('uninstall rolls back the new platforms', () => {
     expect(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf-8')).toBe(original);
     expect(res.removedMcpServers.filter((s) => s.startsWith('cursor:'))).toEqual([]);
   });
+
+  it('an identical entry that was there before agenthub is the user\'s: recorded as pre, kept on uninstall', () => {
+    for (const d of ['.cursor', '.copilot']) ensureDir(path.join(home, d));
+    safeWriteFile(path.join(home, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { same: { command: 'same' } } }));
+    safeWriteFile(path.join(hub, 'mcp', 'servers.json'), JSON.stringify({ mcpServers: { same: { command: 'same' } } }));
+    syncMcpServers(home, hub);
+    const origins = JSON.parse(fs.readFileSync(path.join(hub, 'mcp', 'origins.json'), 'utf-8'));
+    expect(origins.same).toEqual({ from: [], to: ['copilot'], pre: ['cursor'] });
+
+    const res = uninstallHub({ home, hub });
+    expect(res.removedMcpServers).toContain('copilot:same');
+    expect(res.keptMcpServers).toContain('cursor:same (not written by agenthub)');
+    expect(JSON.parse(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf-8')).mcpServers.same).toEqual({ command: 'same' });
+  });
+
+  it('a skipped write (corrupt file) is not recorded as written', () => {
+    for (const d of ['.cursor', '.copilot']) ensureDir(path.join(home, d));
+    safeWriteFile(path.join(home, '.cursor', 'mcp.json'), '{ broken');
+    safeWriteFile(path.join(hub, 'mcp', 'servers.json'), JSON.stringify({ mcpServers: { a: { command: 'a' } } }));
+    syncMcpServers(home, hub);
+    const origins = JSON.parse(fs.readFileSync(path.join(hub, 'mcp', 'origins.json'), 'utf-8'));
+    expect(origins.a.to).toEqual(['copilot']);
+  });
 });

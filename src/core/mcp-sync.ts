@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { safeWriteFile } from '../utils/fs.js';
+import { getUtcTimestamp, safeWriteFile } from '../utils/fs.js';
 import { getHomeDir, getHubDir } from './detector.js';
 import {
   MCP_PLATFORMS,
@@ -9,6 +9,7 @@ import {
   isDisabled,
   projectPlatformServers,
   readPlatform,
+  sameEntry,
   writePlatformServers,
   type McpPlatform,
   type McpPlatformId,
@@ -246,8 +247,12 @@ function projectFor(
 // ---- origins: which platform each hub server was ingested from, and where the hub wrote it ----
 
 export interface McpOrigin {
+  /** Ingested from these platforms: the entry was there before agenthub */
   from: McpPlatformId[];
+  /** agenthub wrote the entry there (and it is safe to remove again) */
   to: McpPlatformId[];
+  /** An identical entry was already there on first sync: the user's, kept on uninstall */
+  pre: McpPlatformId[];
 }
 
 export function originsPath(hub: string): string {
@@ -258,7 +263,9 @@ export function readOrigins(hub: string): Record<string, McpOrigin> {
   const read = readJsonSafely<Record<string, Partial<McpOrigin>>>(originsPath(hub));
   const out: Record<string, McpOrigin> = {};
   for (const [name, o] of Object.entries(read.success ? read.data : {})) {
-    if (o && typeof o === 'object') out[name] = { from: Array.isArray(o.from) ? o.from : [], to: Array.isArray(o.to) ? o.to : [] };
+    if (o && typeof o === 'object') {
+      out[name] = { from: Array.isArray(o.from) ? o.from : [], to: Array.isArray(o.to) ? o.to : [], pre: Array.isArray(o.pre) ? o.pre : [] };
+    }
   }
   return out;
 }
@@ -309,9 +316,8 @@ function platformStatus(
   };
 }
 
-/** A different entry the hub never wrote there and never ingested from there. Legacy platforms overwrite as before. */
+/** A different entry the hub never wrote there and never ingested from there. */
 function isConflict(platform: McpPlatform, id: McpPlatformId, name: string, origins: Record<string, McpOrigin>): boolean {
-  if (platform.legacy) return false;
   const o = origins[name];
   return !o || (!o.from.includes(id) && !o.to.includes(id));
 }
@@ -418,7 +424,7 @@ export function syncMcpServers(
         continue;
       }
       hubServers[name] = normalizeServerForHub(name, platform.fromNative(native), home, hub);
-      origins[name] = { from: [id], to: origins[name]?.to ?? [] };
+      origins[name] = { from: [id], to: origins[name]?.to ?? [], pre: origins[name]?.pre ?? [] };
       hubChanged = true;
       actions.push(`Ingested server "${name}" from ${platform.label} into hub`);
     }
@@ -433,6 +439,8 @@ export function syncMcpServers(
 
   const projectedHub = expandServers(hubServers, home, hub);
 
+  const backupDir = path.join(hub, 'backups', `mcp-sync-${getUtcTimestamp()}`);
+
   for (const id of MCP_PLATFORM_IDS) {
     const platform = MCP_PLATFORMS[id];
     const state = states[id];
@@ -445,28 +453,46 @@ export function syncMcpServers(
         const native = state.servers[name];
         if (native && isConflict(platform, id, name, origins) && platformDrifted(platform, native, projectedHub[name])) {
           keep.add(name);
-          actions.push(`[CONFLICT] ${platform.label} has its own "${name}" that differs from the hub: left as is (use --force to overwrite)`);
+          actions.push(`[CONFLICT] ${platform.label} has its own "${name}" that differs from the hub: left as is (agenthub mcp sync --force overwrites it)`);
         }
       }
     }
 
+    // names the hub wrote in this run, and names that were already identical before it
+    const wrote = new Set<string>();
     const existing = state.files.filter((f) => f.exists).map((f) => f.path);
     for (const filePath of platform.writeFiles(home, existing)) {
       const file = state.files.find((f) => f.path === filePath);
       if (!file) continue;
       if (!file.exists && Object.keys(projectedHub).length === 0 && !platform.legacy) continue;
       const target = projectFor(platform, projectedHub, file.servers, keep);
+      const changing = Object.keys(target).filter((n) => !sameEntry(file.servers[n], target[n]));
+      // a forced run changes files the user may have edited: keep a copy of each first
+      if (force && changing.length > 0 && file.exists) {
+        const copy = path.join(backupDir, path.relative(home, file.path));
+        fs.mkdirSync(path.dirname(copy), { recursive: true });
+        fs.copyFileSync(file.path, copy);
+        actions.push(`Backed up ${path.basename(file.path)} to ${copy}`);
+      }
       const outcome = writePlatformServers(platform, file, target, [], Boolean(platform.legacy));
       if (outcome.skipped) actions.push(`[SKIP] ${outcome.skipped}`);
-      else if (outcome.changed) actions.push(`Updated ${platform.label} MCP configuration in ${path.basename(filePath)}`);
+      else if (outcome.changed) {
+        actions.push(`Updated ${platform.label} MCP configuration in ${path.basename(filePath)}`);
+        for (const n of changing) wrote.add(n);
+      }
     }
 
-    // from now on the hub owns the entries it wrote (or found already equal)
+    // record who owns what: only after a successful write, or when it was identical already
     if (state.valid) {
       for (const name of Object.keys(projectedHub)) {
         if (keep.has(name) || !(name in hubServers)) continue;
-        const o = (origins[name] ??= { from: [], to: [] });
-        if (!o.to.includes(id)) o.to.push(id);
+        const o = (origins[name] ??= { from: [], to: [], pre: [] });
+        if (wrote.has(name)) {
+          if (!o.to.includes(id)) o.to.push(id);
+          o.pre = o.pre.filter((p) => p !== id);
+        } else if (name in state.servers && !o.to.includes(id) && !o.from.includes(id) && !o.pre.includes(id)) {
+          o.pre.push(id);
+        }
       }
     }
   }

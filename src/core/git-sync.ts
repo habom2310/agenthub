@@ -33,6 +33,7 @@ export const STANDARD_IGNORE_ENTRIES = [
   '.env',
   '*.env',
   '/vendor/',
+  '/mcp/origins.json',
 ];
 
 export const MANAGED_BLOCK_START = '# >>> agenthub managed (do not edit)';

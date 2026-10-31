@@ -44,7 +44,8 @@ describe('MCP platform adapters', () => {
     });
 
     it('Cursor: no type key', () => {
-      expect(MCP_PLATFORMS.cursor.toNative({ ...stdio, type: 'stdio' })).toEqual(stdio);
+      const expanded = { ...stdio, args: ['/abs/index.js'] }; // sync expands ${HUB} and ${HOME} before adapting
+      expect(MCP_PLATFORMS.cursor.toNative({ ...expanded, type: 'stdio' })).toEqual(expanded);
       expect(MCP_PLATFORMS.cursor.toNative({ ...remote, type: 'http' })).toEqual(remote);
     });
 
@@ -220,6 +221,24 @@ trust_level = "trusted"
       expect(spliceCodexServers('mcp_servers = { a = { command = "x" } }\n', { a: { command: 'y' } })).toBeNull();
     });
 
+    it('handles headers whose quoted keys contain ], neither mistaking nor losing them', () => {
+      const text = `[projects."/a]b/c"]
+trust_level = "trusted"
+
+[mcp_servers."we]ird"]
+command = "old"
+
+[mcp_servers.plain]
+command = "plain"
+`;
+      const out = spliceCodexServers(text, { 'we]ird': { command: 'new' }, plain: null }) as string;
+      expect(out).not.toBeNull();
+      expect(out).toContain('[projects."/a]b/c"]\ntrust_level = "trusted"');
+      const parsed: any = parseToml(out);
+      expect(parsed.mcp_servers).toEqual({ 'we]ird': { command: 'new' } });
+      expect(parsed.projects['/a]b/c'].trust_level).toBe('trusted');
+    });
+
     it('creates config.toml when the platform is detected but has none', () => {
       writeHub({ a: { command: 'node' } });
       syncMcpServers(home, hub);
@@ -277,6 +296,22 @@ trust_level = "trusted"
       expect(out).toContain('# top\nmodel = "x"\n');
       expect(out).toContain('[mcp_servers.a]');
       expect(spliceCodexServers('a = 1\n[mcp_servers.x]\ncommand = "x"\n', { x: { command: 'y' } })).toContain('a = 1\n');
+    });
+  });
+
+  describe('${VAR} portability', () => {
+    it('Cursor gets ${env:VAR} and ingest turns it back; Claude and Gemini take ${VAR} as is', () => {
+      const cfg = { command: 'node', args: ['--k', '${API_KEY}'], env: { T: '${TOKEN}' }, headers: { A: 'Bearer ${TOKEN}' } };
+      const cursor = MCP_PLATFORMS.cursor;
+      expect(cursor.toNative(cfg)).toEqual({ command: 'node', args: ['--k', '${env:API_KEY}'], env: { T: '${env:TOKEN}' }, headers: { A: 'Bearer ${env:TOKEN}' } });
+      expect(cursor.fromNative(cursor.toNative(cfg))).toEqual(cfg);
+      expect(MCP_PLATFORMS.claude.toNative(cfg).args).toEqual(['--k', '${API_KEY}']);
+
+      writeHub({ srv: cfg });
+      syncMcpServers(home, hub);
+      expect(readJson(file.cursor()).mcpServers.srv.args).toEqual(['--k', '${env:API_KEY}']);
+      expect(readJson(file.windsurf()).mcpServers.srv.args).toEqual(['--k', '${API_KEY}']);
+      expect(getMcpStatus(home, hub).platforms.cursor.drifted).toEqual([]);
     });
   });
 });

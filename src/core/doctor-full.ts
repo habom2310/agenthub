@@ -4,7 +4,8 @@ import { getHomeDir, getHubDir } from './detector.js';
 import { runDoctor, type DoctorResult } from './doctor.js';
 import { hasDeclaredSources, itemLabel, planInstall } from './installer.js';
 import { isLinkTo, linkSkillsForAllAssistants } from './linker.js';
-import { probeMcpServers } from './mcp-probe.js';
+import { envVarsOf, probeMcpServers } from './mcp-probe.js';
+import { MCP_PLATFORMS, MCP_PLATFORM_IDS, type VarField } from './mcp-platforms.js';
 import { expandServerPaths, readJsonSafely, syncMcpServers, type McpServerConfig } from './mcp-sync.js';
 import {
   assistantSkillRoots,
@@ -71,15 +72,52 @@ function hubServers(hub: string, home: string): Record<string, McpServerConfig> 
   return out;
 }
 
+// ---- MCP: ${VAR} that an assistant does not expand ----
+
+/**
+ * Reads the hub only. A ${VAR} in a field an installed assistant does not expand
+ * (per MCP_PLATFORMS[..].varFields) reaches the server as literal text.
+ */
+export function varItems(home: string, hub: string): DoctorItem[] {
+  const items: DoctorItem[] = [];
+  const installed = MCP_PLATFORM_IDS.map((id) => MCP_PLATFORMS[id]).filter((p) => p.installed(home));
+  const fields: VarField[] = ['command', 'args', 'env', 'url', 'headers', 'cwd'];
+  for (const [name, cfg] of Object.entries(hubServers(hub, home))) {
+    for (const platform of installed) {
+      const lost: string[] = [];
+      for (const f of fields) {
+        if (platform.varFields.includes(f) || cfg[f] === undefined) continue;
+        for (const v of envVarsOf({ [f]: cfg[f] } as McpServerConfig)) lost.push(`\${${v}} (${f})`);
+      }
+      if (lost.length > 0) {
+        items.push({
+          group: 'mcp',
+          name: `${name} variables in ${platform.label}`,
+          level: 'WARN',
+          message: `${platform.label} does not expand ${lost.join(', ')}; the server receives it as literal text. Use a literal value for ${platform.label}`,
+        });
+      }
+    }
+  }
+  return items;
+}
+
 // ---- MCP: start each server and list its tools ----
 
-/** What a probe would start, one line per hub server, expanded as it would run. */
+/**
+ * What a probe would start, one line per hub server, expanded as it would run:
+ * the full command line or url (query included), the header names, and every
+ * environment variable that would be substituted into it.
+ */
 export function probeTargets(home: string, hub: string): string[] {
-  return Object.entries(hubServers(hub, home)).map(([name, cfg]) =>
-    typeof cfg.url === 'string' && !cfg.command
-      ? `${name}: connect to ${cfg.url.replace(/\/\/[^/@]*@/, '//').replace(/\?.*$/, '')}`
-      : `${name}: ${[cfg.command, ...(cfg.args ?? [])].filter((x) => x !== undefined).join(' ')}`
-  );
+  return Object.entries(hubServers(hub, home)).map(([name, cfg]) => {
+    const remote = typeof cfg.url === 'string' && !cfg.command;
+    const parts = remote
+      ? [`connect to ${cfg.url}`, ...(cfg.headers && Object.keys(cfg.headers).length ? [`headers: ${Object.keys(cfg.headers).join(', ')}`] : [])]
+      : [[cfg.command, ...(cfg.args ?? [])].filter((x) => x !== undefined).join(' '), ...(cfg.env && Object.keys(cfg.env).length ? [`env: ${Object.keys(cfg.env).join(', ')}`] : [])];
+    const vars = envVarsOf(cfg);
+    return `${name}: ${parts.join('; ')}${vars.length ? `; will substitute env: ${vars.join(', ')}` : ''}`;
+  });
 }
 
 export async function mcpItems(home: string, hub: string, options: FullDoctorOptions): Promise<DoctorItem[]> {
@@ -247,6 +285,7 @@ export async function runFunctionalChecks(options: FullDoctorOptions = {}): Prom
   } catch (err) {
     items.push({ group: 'sources', name: 'sources', level: 'FAIL', message: (err as Error).message });
   }
+  items.push(...varItems(home, hub));
   if (functional) items.push(...(await mcpItems(home, hub, options)));
   return items;
 }
@@ -264,10 +303,10 @@ export async function runFullDoctor(options: FullDoctorOptions = {}): Promise<Fu
       if (blockers.length > 0) notes.push(`install flow left ${blockers.length} problem(s)`);
     }
     linkSkillsForAllAssistants({ homeDir, hubDir });
-    repairs.push(...syncMcpServers({ homeDir, hubDir, force: true }).actions.filter((a) => !a.startsWith('All MCP')));
+    repairs.push(...syncMcpServers({ homeDir, hubDir }).actions.filter((a) => !a.startsWith('All MCP')));
   }
 
-  const structural = runDoctor({ fix: options.fix, force: options.fix, homeDir, hubDir });
+  const structural = runDoctor({ fix: options.fix, homeDir, hubDir });
   repairs.push(...structural.repairs);
 
   const items = structuralItems(structural);

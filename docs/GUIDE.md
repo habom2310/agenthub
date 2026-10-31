@@ -80,7 +80,7 @@ npx @habom2310/agenthub setup
 ## What `agenthub setup` Does Automatically
 1. **Scaffolds** the central `~/.agenthub` directory with starter heuristics, templates, and subagents (while creating a timestamped backup of existing rules and config files such as `CLAUDE.md`, `GEMINI.md`, `AGENTS.md` and `settings.json`).
 2. **Auto-wires all detected assistants**: creates directory junctions for shared skills (`~/.claude/skills`, `~/.gemini/config/skills.json`, `.codex/skills`, etc.), compiles and projects unified markdown rules (`GEMINI.md`, `CLAUDE.md`, `AGENTS.md`, Cursor MDC rules), and synchronizes MCP server definitions. An existing skills folder is copied into the hub and renamed to `skills.old`; if `skills.old` already exists, it is kept and the new backup goes to a timestamped `skills.old.<YYYYMMDD_HHMMSSZ>`. `agenthub uninstall` restores `skills.old` (the first backup); timestamped backups stay in place for you to restore or delete by hand.
-A new hub declares its starter MCP server `codegraph` with a custom source (`check: command -v codegraph`, `install: npm install -g @colbymchenry/codegraph`), so `setup` offers to install it as part of the install plan.
+A new hub declares its starter MCP server `codegraph` with a custom source (`check: codegraph --version`, `install: npm install -g @colbymchenry/codegraph`), so `setup` offers to install it as part of the install plan.
 3. **Validates system health**: verifies all junctions, rule files, and MCP configs. When you approved the install plan or passed `--yes`, it also starts each MCP server and lists its tools (see [Health checks](#health-checks-agenthub-doctor)); otherwise it skips that step and tells you to run `agenthub doctor`.
 
 ### Handling Blockers
@@ -169,9 +169,14 @@ Each assistant gets its own format:
 
 Servers that exist only in an assistant are ingested into the hub with `${HOME}` and `${HUB}` placeholders (disabled Codex servers are not ingested).
 A config file that does not parse is never overwritten: the sync reports `[SKIP]` and `agenthub doctor` flags it.
-An entry that an assistant has under the same name as a hub server, but with a different config that agenthub never wrote or ingested there, is reported as `[CONFLICT]` and left alone for Codex, Cursor, Windsurf and Copilot CLI.
-`agenthub mcp sync --force` and `agenthub doctor --fix` overwrite it.
-`~/.agenthub/mcp/origins.json` records which assistant each hub server was ingested from and where agenthub wrote it.
+An entry that an assistant has under the same name as a hub server, but with a different config that agenthub never wrote or ingested there, is reported as `[CONFLICT]` and left alone, on all six assistants.
+`agenthub doctor --fix` reports it and leaves it alone too.
+Only an explicit `agenthub mcp sync --force` overwrites it, after copying each file it changes to `backups/mcp-sync-<timestamp>/` in the hub.
+`~/.agenthub/mcp/origins.json` records which assistant each hub server was ingested from (`from`), where agenthub wrote it (`to`, recorded only after a successful write) and where an identical entry was already there before agenthub (`pre`).
+It describes this machine, so the hub's `.gitignore` excludes it.
+A hub from before this file existed has no record, so entries it wrote earlier show as conflicts until you run `agenthub mcp sync --force` once.
+`${VAR}` in a server is written the way each assistant documents: Claude takes it as is, Cursor gets `${env:VAR}`, and Gemini expands it only in `env`.
+Codex, Windsurf and Copilot CLI document no `${VAR}` expansion, so the server would receive the text literally, and `agenthub doctor` warns, naming the assistant and the variable.
 A server that is disabled on an assistant (`enabled = false`, `disabled: true`) is not reported as untracked.
 Config files keep their mode (a new one gets 0600) and a symlinked config stays a symlink.
 
@@ -203,7 +208,7 @@ Results are grouped as `[PASS]`, `[WARN]` and `[FAIL]` with a one-line reason, a
 
 Starting a server or running a `check` executes a command that your hub declares, so these steps run only because you asked for them:
 - `agenthub doctor` runs them. `--no-functional` skips them (the file checks above still run).
-- `agenthub setup` and `agenthub pull` list every MCP command they will start under "Will start to verify", after the install plan, and ask once for both lists. They run only after you approve or pass `--yes`. Without a terminal and without `--yes` they start nothing and say so. Declining the plan on `setup` leaves the pending items as a note, not a failure.
+- `agenthub setup` and `agenthub pull` list every MCP server they will start under "Will start to verify" (the full command line, or the full url including its query, the header names, and every environment variable that will be substituted), after the install plan, and ask once for both lists. They run only after you approve or pass `--yes`. Without a terminal and without `--yes` they start nothing and say so. Declining the plan on `setup` leaves the pending items as a note, not a failure.
 - Nothing that plans or scans (`install` plan, `adopt`) runs them.
 
 ```bash
@@ -221,7 +226,7 @@ It scans every detected assistant's skills folders and MCP configs (and `skills/
 
 | Found | Proposed source |
 |---|---|
-| Skill (link or folder) inside a git checkout with a remote | `github:owner/repo#subpath`, or `git:<url>#subpath`, credentials removed |
+| Skill (link or folder) inside a git checkout with a remote | `github:owner/repo#subpath`, or `git:<url>#subpath`, credentials removed, pinned to the checkout's commit (`ref`). The commit and the remote's last fetched HEAD are read from `.git` files; git is never run. It is confident only when both are the same commit. Local edits are not checked. |
 | Skill linked into a tool-managed folder such as `~/.local/share/<tool>/skills/...` | `custom` with `check: test -f <path>/SKILL.md` and `path`; you supply the `install` command |
 | Plain skill folder, no git | self-built (moved into `skills/` as `local`) or a source you enter |
 | Claude Code plugin skill (under `~/.claude/plugins`) | reported only; optionally `custom` with `claude plugin install <plugin>@<marketplace>` |

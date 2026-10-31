@@ -400,7 +400,7 @@ describe('mcp-sync', () => {
       expect(statusBefore.drifted_in_claude).toEqual(['app']);
       expect(statusBefore.missing_in_claude).toEqual([]);
 
-      const syncRes = syncMcpServers(homeDir, hubDir);
+      const syncRes = syncMcpServers({ homeDir, hubDir, force: true });
       expect(syncRes.success).toBe(true);
 
       const statusAfter = getMcpStatus(homeDir, hubDir);
@@ -500,7 +500,7 @@ describe('mcp-sync', () => {
         expect(status.drifted_in_claude.sort()).toEqual(['explicit', 'implicit']);
         expect(status.in_sync).toBe(false);
 
-        syncMcpServers(homeDir, hubDir);
+        syncMcpServers({ homeDir, hubDir, force: true });
         const after = getMcpStatus(homeDir, hubDir);
         expect(after.in_sync).toBe(true);
         const claudeData = JSON.parse(
@@ -510,6 +510,25 @@ describe('mcp-sync', () => {
         expect(claudeData.mcpServers.explicit.type).toBe('stdio');
       }
     );
+
+    it('leaves a Claude or Gemini entry the hub never wrote alone, and --force overwrites it after a backup', () => {
+      safeWriteFile(path.join(hubDir, 'mcp', 'servers.json'), JSON.stringify({ mcpServers: { app: { command: 'hub-app' } } }));
+      safeWriteFile(path.join(homeDir, '.claude.json'), JSON.stringify({ mcpServers: { app: { command: 'mine' } } }));
+      safeWriteFile(path.join(homeDir, '.gemini', 'config', 'mcp_config.json'), JSON.stringify({ mcpServers: { app: { command: 'mine-g' } } }));
+
+      expect(getMcpStatus(homeDir, hubDir).platforms.claude.conflicted).toEqual(['app']);
+      const res = syncMcpServers(homeDir, hubDir);
+      expect(res.actions.filter((a) => a.startsWith('[CONFLICT]')).map((a) => a.split(' ')[1])).toEqual(['Claude', 'Gemini']);
+      expect(JSON.parse(fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf-8')).mcpServers.app.command).toBe('mine');
+
+      const forced = syncMcpServers({ homeDir, hubDir, force: true });
+      expect(forced.actions.some((a) => a.startsWith('Backed up .claude.json to '))).toBe(true);
+      expect(JSON.parse(fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf-8')).mcpServers.app.command).toBe('hub-app');
+      const backups = fs.readdirSync(path.join(hubDir, 'backups')).filter((d) => d.startsWith('mcp-sync-'));
+      const saved = JSON.parse(fs.readFileSync(path.join(hubDir, 'backups', backups[0], '.claude.json'), 'utf-8'));
+      expect(saved.mcpServers.app.command).toBe('mine');
+      expect(getMcpStatus(homeDir, hubDir).in_sync).toBe(true);
+    });
 
     it('detects drift for a url server with sse type when the hub has no type', () => {
       safeWriteFile(
@@ -524,7 +543,7 @@ describe('mcp-sync', () => {
       );
 
       expect(getMcpStatus(homeDir, hubDir).drifted_in_claude).toEqual(['remote']);
-      syncMcpServers(homeDir, hubDir);
+      syncMcpServers({ homeDir, hubDir, force: true });
       const claudeData = JSON.parse(
         fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf-8')
       );
@@ -574,7 +593,7 @@ describe('mcp-sync', () => {
       expect(status.missing_in_gemini).toEqual([]);
       expect(status.in_sync).toBe(true);
 
-      const syncRes = syncMcpServers(homeDir, hubDir);
+      const syncRes = syncMcpServers({ homeDir, hubDir, force: true });
       expect(syncRes.success).toBe(true);
 
       // Verify no ghost files or directories created

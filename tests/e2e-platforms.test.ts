@@ -160,10 +160,30 @@ describe('E2E: one hub, six assistants', () => {
     expect(out).toContain('Install plan (1):');
     expect(out).toContain('mcp codegraph');
     expect(out).toContain('install: npm install -g @colbymchenry/codegraph');
-    expect(out).toContain('check:   command -v codegraph');
+    expect(out).toContain('check:   codegraph --version');
     expect(out).toContain('MCP servers were not started');
     expect(out).not.toContain('[FAIL]');
     expect(out).toContain('agenthub setup completed successfully');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('install on a bare hub creates no files in it', async () => {
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    write(path.join(hub, 'agenthub.json'), JSON.stringify({ name: 'bare' }));
+    const files = (): string[] => {
+      const out: string[] = [];
+      const walk = (d: string): void => {
+        for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+          out.push(path.relative(hub, path.join(d, e.name)));
+          if (e.isDirectory()) walk(path.join(d, e.name));
+        }
+      };
+      walk(hub);
+      return out.sort();
+    };
+    const before = files();
+    await runCli(['-H', home, 'install']);
+    expect(files()).toEqual(before);
     expect(process.exitCode).toBeUndefined();
   });
 });

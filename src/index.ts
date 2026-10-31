@@ -241,6 +241,7 @@ export {
 } from './core/sources.js';
 export {
   hasDeclaredSources,
+  isBareHub,
   actionLabel,
   itemLabel,
   planInstall,

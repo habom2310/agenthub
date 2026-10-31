@@ -157,13 +157,14 @@ function resolveWriteTarget(filePath: string): string {
 /**
  * Safely writes a UTF-8 file, ensuring parent directories exist before writing.
  * Uses atomic sibling write and rename to prevent partial writes. A symlinked file
- * stays a symlink (the target is rewritten), an existing file keeps its mode, and
- * a new file is created with mode 0600 because configs can hold tokens.
+ * stays a symlink (the target is rewritten) and an existing file keeps its mode.
+ * A new file gets `options.mode` (0600 for files that can hold tokens) or the
+ * default mode.
  */
-export function safeWriteFile(filePath: string, content: string): void {
+export function safeWriteFile(filePath: string, content: string, options?: { mode?: number }): void {
   const target = resolveWriteTarget(filePath);
   ensureDir(path.dirname(target));
-  let mode = 0o600;
+  let mode: number | undefined = options?.mode;
   try {
     mode = fs.statSync(target).mode & 0o7777;
   } catch {
@@ -171,8 +172,8 @@ export function safeWriteFile(filePath: string, content: string): void {
   }
   const tempPath = `${target}.${process.pid}.${Date.now()}.tmp`;
   try {
-    fs.writeFileSync(tempPath, content, { encoding: 'utf-8', mode });
-    if (process.platform !== 'win32') fs.chmodSync(tempPath, mode);
+    fs.writeFileSync(tempPath, content, { encoding: 'utf-8', ...(mode !== undefined ? { mode } : {}) });
+    if (mode !== undefined && process.platform !== 'win32') fs.chmodSync(tempPath, mode);
     fs.renameSync(tempPath, target);
   } catch (err) {
     try {

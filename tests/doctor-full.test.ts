@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runFullDoctor, runFunctionalChecks, skillItems, sourceItems, type DoctorItem } from '../src/core/doctor-full.js';
+import { probeTargets, runFullDoctor, varItems, runFunctionalChecks, skillItems, sourceItems, type DoctorItem } from '../src/core/doctor-full.js';
 import { createJunction, ensureDir, safeWriteFile } from '../src/utils/fs.js';
 
 const fixture = path.resolve(__dirname, 'fixtures', 'mcp-stdio-server.cjs');
@@ -124,5 +124,42 @@ describe('functional doctor', () => {
     const skipped = await runFullDoctor({ homeDir: home, hubDir: hub, functional: false });
     expect(skipped.items.some((i) => i.group === 'mcp')).toBe(false);
     expect(skipped.notes.join(' ')).toContain('--no-functional');
+  });
+
+  it('doctor --fix reports a conflicting MCP entry and leaves it alone; only mcp sync --force overwrites', async () => {
+    const cursor = path.join(home, '.cursor', 'mcp.json');
+    safeWriteFile(cursor, JSON.stringify({ mcpServers: { app: { command: 'mine' } } }));
+    writeServers({ app: { command: 'hub-app' } });
+    const res = await runFullDoctor({ homeDir: home, hubDir: hub, fix: true, functional: false });
+    expect(JSON.parse(fs.readFileSync(cursor, 'utf-8')).mcpServers.app.command).toBe('mine');
+    expect(res.ok).toBe(false);
+    expect(res.items.some((i) => i.level === 'FAIL' && i.message.includes('conflict in Cursor'))).toBe(true);
+    expect(res.repairs.some((r) => r.startsWith('[CONFLICT]'))).toBe(true);
+    expect(fs.existsSync(path.join(hub, 'backups'))).toBe(false);
+  });
+
+  it('probe consent text shows the full url with its query, header names and every substituted variable', () => {
+    writeServers({
+      api: { url: 'https://api.example/mcp?key=${API_KEY}&v=2', headers: { Authorization: 'Bearer ${TOKEN}', 'X-Plain': 'x' } },
+      local: { command: 'node', args: ['server.js', '--db', '${DB_URL}'], env: { AWS_SECRET_ACCESS_KEY: '${AWS_SECRET_ACCESS_KEY}', MODE: 'dev' } },
+      plain: { command: 'node', args: ['a.js'] },
+    });
+    const lines = probeTargets(home, hub);
+    expect(lines[0]).toBe('api: connect to https://api.example/mcp?key=${API_KEY}&v=2; headers: Authorization, X-Plain; will substitute env: API_KEY, TOKEN');
+    expect(lines[1]).toBe('local: node server.js --db ${DB_URL}; env: AWS_SECRET_ACCESS_KEY, MODE; will substitute env: AWS_SECRET_ACCESS_KEY, DB_URL');
+    expect(lines[2]).toBe('plain: node a.js');
+  });
+
+  it('warns, naming the assistant and the variable, where an installed assistant does not expand ${VAR}', () => {
+    for (const d of ['.claude', '.cursor', '.codex', path.join('.codeium', 'windsurf'), '.gemini']) fs.mkdirSync(path.join(home, d), { recursive: true });
+    writeServers({ srv: { command: 'node', args: ['--k', '${API_KEY}'], env: { T: '${TOKEN}' } } });
+    const items = varItems(home, hub);
+    const labels = items.map((i) => i.name).sort();
+    expect(labels).toEqual(['srv variables in Codex', 'srv variables in Gemini', 'srv variables in Windsurf']);
+    expect(items.every((i) => i.level === 'WARN' && i.group === 'mcp')).toBe(true);
+    expect(find(items, 'srv variables in Windsurf')?.message).toContain('${API_KEY} (args), ${TOKEN} (env)');
+    // Gemini expands the env block, so only args is reported there
+    expect(find(items, 'srv variables in Gemini')?.message).toContain('${API_KEY} (args)');
+    expect(find(items, 'srv variables in Gemini')?.message).not.toContain('TOKEN');
   });
 });

@@ -23,6 +23,7 @@ import {
   finalizeInstall,
   gitStatus,
   hasDeclaredSources,
+  isBareHub,
   initHub,
   linkSkillsForAllAssistants,
   packageAdd,
@@ -187,15 +188,18 @@ export function buildCli(): Command {
         if (flow.pendingIsBlocker !== false) blockers.push(`${plan.actions.length} install step(s) pending (${why})`);
         for (const p of finalizeInstall(hub, plan.actions.map(actionLabel))) blockers.push(`${p.item}: ${p.message}`);
       }
-    } else {
+    } else if (!isBareHub(hub)) {
       for (const p of runInstall(plan).failed) {
         console.error(pc.red(`✗ ${p.item}: ${p.message}`));
         blockers.push(`${p.item}: ${p.message}`);
       }
     }
 
-    linkSkillsForAllAssistants({ homeDir: home, hubDir: hub });
-    syncMcpServers({ homeDir: home, hubDir: hub });
+    // a hub that declares nothing has nothing to link or sync from an install
+    if (!isBareHub(hub)) {
+      linkSkillsForAllAssistants({ homeDir: home, hubDir: hub });
+      syncMcpServers({ homeDir: home, hubDir: hub });
+    }
     if (blockers.length === 0 && !declined) {
       console.log(pc.green(`✓ Skills and MCP servers are installed${installedCount ? ` (${installedCount} new)` : ''}`));
     }

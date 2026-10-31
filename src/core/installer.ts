@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createJunction, ensureDir, isJunctionOrSymlink, isWithin, safeWriteFile } from '../utils/fs.js';
 import { getHomeDir, getHubDir } from './detector.js';
 import { ensureGitignore, readManagedIgnoreBlock, updateManagedIgnoreBlock } from './git-sync.js';
-import { setDeclaredSource } from './manifest.js';
+import { loadManifest, setDeclaredSource } from './manifest.js';
 import { readJsonSafely, type McpServerConfig } from './mcp-sync.js';
 import {
   emptyLock,
@@ -12,6 +12,7 @@ import {
   loadDeclaredSources,
   loadLock,
   loadLockChecked,
+  lockPath,
   parseSourceSpec,
   pinOf,
   resolvePin,
@@ -217,6 +218,17 @@ function prunedLock(lock: LockFile, sources: DeclaredSource[]): LockFile {
   return out;
 }
 
+/**
+ * A hub that declares no skills or mcp and has no lockfile: installing has
+ * nothing to do and must not create files in it.
+ */
+export function isBareHub(hubDir?: string): boolean {
+  const hub = hubDir || getHubDir();
+  const manifest = loadManifest(hub);
+  const declares = manifest !== null && ('skills' in manifest || 'mcp' in manifest);
+  return !declares && !fs.existsSync(lockPath(hub));
+}
+
 export function hasDeclaredSources(hubDir?: string): boolean {
   const { sources, errors } = loadDeclaredSources(hubDir || getHubDir());
   return sources.length > 0 || errors.length > 0;
@@ -342,8 +354,24 @@ function swapIn(tmp: string, finalDir: string): void {
   fs.renameSync(tmp, finalDir);
 }
 
-function checkSubpath(root: string, subpath: string | undefined, what: string): void {
-  if (subpath && !isDir(path.join(root, subpath))) throw new Error(`subpath "${subpath}" not found in ${what}`);
+/**
+ * The subpath must be a folder inside the checkout. A symlink (or a link along the
+ * way) that leads outside it is rejected, since it would expose files that are not
+ * part of the source.
+ */
+export function checkSubpath(root: string, subpath: string | undefined, what: string): void {
+  if (!subpath) return;
+  const target = path.join(root, subpath);
+  if (!isDir(target)) throw new Error(`subpath "${subpath}" not found in ${what}`);
+  let real: string;
+  let realRoot: string;
+  try {
+    real = fs.realpathSync(target);
+    realRoot = fs.realpathSync(root);
+  } catch {
+    throw new Error(`subpath "${subpath}" not found in ${what}`);
+  }
+  if (!isWithin(realRoot, real)) throw new Error(`subpath "${subpath}" in ${what} leads outside the checkout`);
 }
 
 function installFromGit(hub: string, a: InstallAction): void {
@@ -430,7 +458,7 @@ export function runInstall(plan: InstallPlan): InstallResult {
       failed.push({ item: actionLabel(a), message: (err as Error).message });
     }
   }
-  saveLock(plan.hub, plan.lock);
+  if (!isBareHub(plan.hub)) saveLock(plan.hub, plan.lock);
   failed.push(...finalizeInstall(plan.hub, failed.map((f) => f.item)));
   return { installed, failed };
 }
@@ -478,10 +506,12 @@ export function finalizeInstall(hubDir?: string, skipItems: string[] = []): Inst
   const hub = hubDir || getHubDir();
   const { sources } = loadDeclaredSources(hub);
   const lock = loadLock(hub);
-  const problems = syncGeneratedMcp(hub, sources, lock);
   const skillsDir = path.join(hub, 'skills');
-  const linked = new Set<string>();
   const previouslyManaged = new Set(readManagedIgnoreBlock(hub).map((e) => e.replace(/^\/skills\//, '')));
+  // nothing declared, nothing locked, nothing managed before: leave the hub as it is
+  if (isBareHub(hub) && previouslyManaged.size === 0) return [];
+  const problems = syncGeneratedMcp(hub, sources, lock);
+  const linked = new Set<string>();
 
   for (const d of sources) {
     if (d.kind !== 'skills' || d.parsed.type === 'local') continue;

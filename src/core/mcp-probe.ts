@@ -121,6 +121,19 @@ function unhook(): void {
   process.off('SIGTERM', onTerm);
 }
 
+/** Names of the environment variables a server's strings would be filled from (not ${userHome}). */
+export function envVarsOf(cfg: McpServerConfig): string[] {
+  const names = new Set<string>();
+  const walk = (v: unknown): void => {
+    if (typeof v === 'string') {
+      for (const m of v.matchAll(/\$\{(?:env:)?([A-Za-z_][A-Za-z0-9_]*)\}/g)) if (m[1] !== 'userHome') names.add(m[1]);
+    } else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === 'object') Object.values(v).forEach(walk);
+  };
+  walk(cfg);
+  return [...names].sort();
+}
+
 /**
  * Resolves ${NAME}, ${env:NAME} and ${userHome} in every string of a server.
  * Returns the names that have no value instead of running with a blank.

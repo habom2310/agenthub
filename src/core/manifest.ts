@@ -38,7 +38,7 @@ export interface AgentPackageManifest {
 
 /** The starter MCP server (templates/mcp/servers.json) is declared so setup can offer to install it. */
 export const DEFAULT_MANIFEST_MCP = {
-  codegraph: { install: 'npm install -g @colbymchenry/codegraph', check: 'command -v codegraph' },
+  codegraph: { install: 'npm install -g @colbymchenry/codegraph', check: 'codegraph --version' },
 };
 
 export const DEFAULT_PLATFORMS = ['gemini', 'claude', 'codex', 'cursor', 'windsurf'];

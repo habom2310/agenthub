@@ -229,4 +229,12 @@ describe('scaffold', () => {
       expect(generatedManifest.platforms.antigravity.enabled).toBe(true);
     });
   });
+
+  it('declares the starter codegraph server with a check that also runs under cmd.exe', () => {
+    initHub({ force: true, customHome: homeDir });
+    const manifest = JSON.parse(fs.readFileSync(path.join(hubDir, 'agenthub.json'), 'utf-8'));
+    expect(manifest.mcp.codegraph.install).toBe('npm install -g @colbymchenry/codegraph');
+    expect(manifest.mcp.codegraph.check).toBe('codegraph --version');
+    expect(manifest.mcp.codegraph.check).not.toContain('command -v');
+  });
 });

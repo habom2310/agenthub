@@ -14,10 +14,19 @@ describe('adopt', () => {
   const skillMd = (name: string) => `---\nname: ${name}\ndescription: d\n---\n`;
   const mkSkill = (dir: string, name: string) => safeWriteFile(path.join(dir, 'SKILL.md'), skillMd(name));
   const find = (items: AdoptItem[], kind: string, name: string) => items.find((i) => i.kind === kind && i.name === name) as AdoptItem;
-  const gitInit = (dir: string, remote?: string) => {
+  // mode: 'fetched' = one commit that origin was last seen at, 'ahead' = a newer local commit, 'none' = no commit yet
+  const gitInit = (dir: string, remote?: string, mode: 'fetched' | 'ahead' | 'none' = 'fetched'): string | undefined => {
     ensureDir(dir);
-    spawnSync('git', ['init', '-q'], { cwd: dir });
-    if (remote) spawnSync('git', ['remote', 'add', 'origin', remote], { cwd: dir });
+    const git = (...a: string[]) => spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd: dir, encoding: 'utf-8' });
+    git('init', '-q');
+    if (remote) git('remote', 'add', 'origin', remote);
+    if (mode === 'none') return undefined;
+    git('commit', '-q', '--allow-empty', '-m', 'one');
+    const first = git('rev-parse', 'HEAD').stdout.trim();
+    safeWriteFile(path.join(dir, '.git', 'refs', 'remotes', 'origin', 'main'), first + '\n');
+    safeWriteFile(path.join(dir, '.git', 'refs', 'remotes', 'origin', 'HEAD'), 'ref: refs/remotes/origin/main\n');
+    if (mode === 'ahead') git('commit', '-q', '--allow-empty', '-m', 'two');
+    return git('rev-parse', 'HEAD').stdout.trim();
   };
   const hubServers = () => JSON.parse(fs.readFileSync(path.join(hub, 'mcp', 'servers.json'), 'utf-8')).mcpServers;
   const claudeJson = (servers: Record<string, unknown>) => safeWriteFile(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: servers }));
@@ -61,20 +70,44 @@ describe('adopt', () => {
   describe('skill inference', () => {
     it('symlink into a git checkout with a GitHub remote -> github:owner/repo#subpath', () => {
       const repo = path.join(tmp, 'code', 'skill-repo');
-      gitInit(repo, 'https://tok@github.com/acme/skill-repo.git');
+      const sha = gitInit(repo, 'https://tok@github.com/acme/skill-repo.git');
       mkSkill(path.join(repo, 'skills', 'alpha'), 'alpha');
       fs.symlinkSync(path.join(repo, 'skills', 'alpha'), path.join(home, '.claude', 'skills', 'alpha'));
       const item = find(scanAdoptable(home, hub), 'skills', 'alpha');
-      expect(item.proposal).toMatchObject({ spec: 'github:acme/skill-repo#skills/alpha', confident: true });
+      expect(item.proposal).toMatchObject({ spec: { source: 'github:acme/skill-repo#skills/alpha', ref: sha }, confident: true });
+      expect(item.proposal?.note).toContain('pinned to it; local edits not checked');
       expect(JSON.stringify(item)).not.toContain('tok');
+    });
+
+    it('a checkout ahead of the remote, or never fetched, or without a readable commit, is not confident', () => {
+      const ahead = path.join(tmp, 'code', 'ahead');
+      const aheadSha = gitInit(ahead, 'https://github.com/acme/ahead.git', 'ahead');
+      mkSkill(ahead, 'ahead');
+      fs.symlinkSync(ahead, path.join(home, '.claude', 'skills', 'ahead'));
+      const fresh = path.join(tmp, 'code', 'fresh');
+      gitInit(fresh, 'https://github.com/acme/fresh.git', 'none');
+      mkSkill(fresh, 'fresh');
+      fs.symlinkSync(fresh, path.join(home, '.claude', 'skills', 'fresh'));
+
+      const items = scanAdoptable(home, hub);
+      const a = find(items, 'skills', 'ahead').proposal;
+      expect(a).toMatchObject({ confident: false, spec: { source: 'github:acme/ahead', ref: aheadSha } });
+      expect(a?.note).toContain('differs from origin');
+      expect(a?.note).toContain('may not exist on the remote');
+      const f = find(items, 'skills', 'fresh').proposal;
+      expect(f).toMatchObject({ confident: false, spec: 'github:acme/fresh' });
+      expect(f?.note).toContain('could not be read');
     });
 
     it('a checkout at another host -> git:<url>, subpath omitted at the repo root', () => {
       const repo = path.join(tmp, 'code', 'beta');
-      gitInit(repo, 'https://u:pw@gitlab.example/g/beta.git');
+      const sha = gitInit(repo, 'https://u:pw@gitlab.example/g/beta.git');
       mkSkill(repo, 'beta');
       fs.symlinkSync(repo, path.join(home, '.claude', 'skills', 'beta'));
-      expect(find(scanAdoptable(home, hub), 'skills', 'beta').proposal).toMatchObject({ spec: 'git:https://gitlab.example/g/beta.git', confident: true });
+      expect(find(scanAdoptable(home, hub), 'skills', 'beta').proposal).toMatchObject({
+        spec: { source: 'git:https://gitlab.example/g/beta.git', ref: sha },
+        confident: true,
+      });
     });
 
     it('symlink into a tool-managed dir -> custom with a check and a question for the install command', () => {
@@ -161,15 +194,36 @@ describe('adopt', () => {
       expect(find(items, 'mcp', 'e').proposal?.confident).toBe(false);
     });
 
+    it('uvx with a flag before the package is not inferred, except flags that take no value', () => {
+      claudeJson({
+        withflag: { command: 'uvx', args: ['--python', '3.12', 'mcp-x'] },
+        withfrom: { command: 'uvx', args: ['--from', 'git+https://x/y', 'mcp-y'] },
+        quiet: { command: 'uvx', args: ['--quiet', 'mcp-z==1.0'] },
+      });
+      const items = scanAdoptable(home, hub);
+      expect(find(items, 'mcp', 'withflag').proposal).toMatchObject({ confident: false, needs: 'install' });
+      expect(JSON.stringify(find(items, 'mcp', 'withflag').proposal)).not.toContain('pypi:');
+      expect(JSON.stringify(find(items, 'mcp', 'withfrom').proposal)).not.toContain('pypi:');
+      expect(find(items, 'mcp', 'quiet').proposal).toMatchObject({ spec: 'pypi:mcp-z@1.0', confident: true });
+    });
+
+    it('a directory name with shell syntax stays text in the generated check command', () => {
+      const dir = path.join(home, '.local', 'share', 'tool', 'skills', '$(touch pwned)');
+      mkSkill(dir, 'evil');
+      fs.symlinkSync(dir, path.join(home, '.claude', 'skills', 'evil'));
+      const p = find(scanAdoptable(home, hub), 'skills', 'evil').proposal;
+      expect((p?.spec as any).check).toBe('test -f "$HOME/.local/share/tool/skills/\\$(touch pwned)/SKILL.md"');
+    });
+
     it('a command inside a git checkout -> git: with the paths rewritten into vendor/', () => {
       const repo = path.join(tmp, 'code', 'srv');
-      gitInit(repo, 'git@gitlab.example:g/srv.git');
+      const sha = gitInit(repo, 'git@gitlab.example:g/srv.git');
       safeWriteFile(path.join(repo, 'server.py'), 'print(1)');
       safeWriteFile(path.join(repo, 'dist', 'main.js'), '');
       claudeJson({ py: { command: 'python3', args: [path.join(repo, 'server.py')] }, built: { command: 'node', args: [path.join(repo, 'dist', 'main.js')] } });
       const items = scanAdoptable(home, hub);
       expect(find(items, 'mcp', 'py').proposal).toMatchObject({
-        spec: 'git:ssh://git@gitlab.example/g/srv.git',
+        spec: { source: 'git:ssh://git@gitlab.example/g/srv.git', ref: sha },
         confident: true,
         rewrite: { from: repo, to: '${HUB}/vendor/mcp/py' },
       });
@@ -251,11 +305,12 @@ describe('adopt', () => {
   });
 
   describe('modes', () => {
+    let sha: string | undefined;
     const setupMixed = () => {
       claudeJson({ npmsrv: { command: 'npx', args: ['-y', 'some-pkg@1.0.0'] }, pathsrv: { command: 'agenthub-fake-tool' } });
       mkSkill(path.join(home, '.claude', 'skills', 'plain'), 'plain');
       const repo = path.join(tmp, 'code', 'sr');
-      gitInit(repo, 'https://github.com/acme/sr.git');
+      sha = gitInit(repo, 'https://github.com/acme/sr.git');
       mkSkill(repo, 'gitskill');
       fs.symlinkSync(repo, path.join(home, '.claude', 'skills', 'gitskill'));
     };
@@ -281,7 +336,7 @@ describe('adopt', () => {
       expect(report.applied.map((a) => a.item).sort()).toEqual(['mcp npmsrv', 'skill gitskill']);
       expect(report.skipped.map((s) => s.item).sort()).toEqual(['mcp pathsrv', 'skill plain']);
       const manifest = loadManifest(hub) as any;
-      expect(manifest.skills).toEqual({ gitskill: 'github:acme/sr' });
+      expect(manifest.skills).toEqual({ gitskill: { source: 'github:acme/sr', ref: sha } });
       expect(manifest.mcp).toEqual({ npmsrv: 'npm:some-pkg@1.0.0' });
       expect(hubServers().npmsrv).toEqual({ command: 'npx', args: ['-y', 'some-pkg@1.0.0'] });
       expect(fs.existsSync(path.join(home, '.claude', 'skills', 'plain', 'SKILL.md'))).toBe(true);
@@ -369,11 +424,11 @@ describe('adopt', () => {
 
     it('git MCP: a build command from the user becomes the source object', async () => {
       const repo = path.join(tmp, 'code', 'built');
-      gitInit(repo, 'https://github.com/acme/built.git');
+      const sha = gitInit(repo, 'https://github.com/acme/built.git');
       safeWriteFile(path.join(repo, 'dist', 'main.js'), '');
       claudeJson({ built: { command: 'node', args: [path.join(repo, 'dist', 'main.js')] } });
       await runAdopt({ homeDir: home, hubDir: hub, prompter: prompter({ 'mcp:built': 'accept' }, ['npm ci && npm run build']) });
-      expect((loadManifest(hub) as any).mcp.built).toEqual({ source: 'github:acme/built', build: 'npm ci && npm run build' });
+      expect((loadManifest(hub) as any).mcp.built).toEqual({ source: 'github:acme/built', ref: sha, build: 'npm ci && npm run build' });
       expect(hubServers().built.args).toEqual(['${HUB}/vendor/mcp/built/dist/main.js']);
     });
 

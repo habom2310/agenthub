@@ -235,10 +235,13 @@ describe('safeWriteFile and secret files', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenthub-safewrite-'));
   afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-  it.skipIf(process.platform === 'win32')('creates new files with mode 0600 and keeps the mode of existing ones', () => {
+  it.skipIf(process.platform === 'win32')('creates new files with the requested mode (default mode otherwise) and keeps the mode of existing ones', () => {
     const created = path.join(dir, 'new.json');
-    safeWriteFile(created, '{}');
+    safeWriteFile(created, '{}', { mode: 0o600 });
     expect(fs.statSync(created).mode & 0o777).toBe(0o600);
+    const plain = path.join(dir, 'plain.md');
+    safeWriteFile(plain, 'x');
+    expect(fs.statSync(plain).mode & 0o777).toBe(0o666 & ~process.umask());
 
     const existing = path.join(dir, 'existing.txt');
     fs.writeFileSync(existing, 'a');
