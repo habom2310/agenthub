@@ -114,9 +114,14 @@ export function expandPathPlaceholders(
   hub: string,
   field: PathField = 'command'
 ): string {
-  const expanded = value.replace(/\$\{(HUB|HOME)\}/g, (_m, key) => (key === 'HUB' ? hub : home));
+  // Write the rest of the path with the base's separator, so Windows gets C:\x\y, not C:\x/y
+  const native = (base: string, rest: string) =>
+    field !== 'url' && base.includes('\\') ? base + rest.replace(/\//g, '\\') : base + rest;
+  const expanded = value.replace(/\$\{(HUB|HOME)\}([^\s'";:]*)/g, (_m, key, rest) =>
+    native(key === 'HUB' ? hub : home, rest)
+  );
   const tilde = field === 'command' ? /^~(\/|$)/ : field === 'value' ? /^~(\/\S*)?$/ : null;
-  return tilde?.test(expanded) ? home + expanded.slice(1) : expanded;
+  return tilde?.test(expanded) ? native(home, expanded.slice(1)) : expanded;
 }
 
 /**

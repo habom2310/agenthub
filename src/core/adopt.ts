@@ -628,7 +628,10 @@ function rewriteStrings(value: unknown, variants: string[], to: string): unknown
     let out = value;
     for (const v of variants) {
       const esc = v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      out = out.replace(new RegExp(`(^|[=:;\\s'"])${esc}(?=$|[\\\\/:;\\s'"])`, 'g'), (_m, pre: string) => pre + to);
+      out = out.replace(
+        new RegExp(`(^|[=:;\\s'"])${esc}((?:[\\\\/][^\\s'";:]*)?)(?=$|[:;\\s'"])`, 'g'),
+        (_m, pre: string, rest: string) => pre + to + rest.replace(/\\/g, '/')
+      );
     }
     return out;
   }

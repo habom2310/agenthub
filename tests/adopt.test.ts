@@ -402,7 +402,7 @@ describe('adopt', () => {
       const backups = fs.readdirSync(path.join(hub, 'backups')).filter((d) => d.startsWith('adopt-'));
       expect(fs.existsSync(path.join(hub, 'backups', backups[0], 'mcp', 'hook', 'my-mcp.sh'))).toBe(true);
       // /path/hook-server-other is a different path: not rewritten
-      expect(hubServers().hook).toEqual({ command: '${HUB}/mcp/servers/hook/my-mcp.sh', args: ['--x', `${dir}-other`.replace(home, '${HOME}')] });
+      expect(hubServers().hook).toEqual({ command: '${HUB}/mcp/servers/hook/my-mcp.sh', args: ['--x', `${dir}-other`.replace(home, '${HOME}').replace(/\\/g, '/')] });
       expect((loadManifest(hub) as any).mcp).toEqual({ hook: 'local' });
     });
 

@@ -610,6 +610,11 @@ describe('mcp-sync', () => {
       expect(expandPathPlaceholders('~/bin/x', '/h', '/hub')).toBe('/h/bin/x');
       expect(expandPathPlaceholders('~', '/h', '/hub')).toBe('/h');
       expect(expandPathPlaceholders('a~/b', '/h', '/hub')).toBe('a~/b');
+      // Windows bases get native separators for the rest of the path, urls do not
+      expect(expandPathPlaceholders('${HUB}/mcp/s/run.js', 'C:\\h', 'C:\\h\\.agenthub')).toBe('C:\\h\\.agenthub\\mcp\\s\\run.js');
+      expect(expandPathPlaceholders('~/bin/x', 'C:\\h', 'C:\\hub')).toBe('C:\\h\\bin\\x');
+      expect(expandPathPlaceholders('--root=${HOME}/a', 'C:\\h', 'C:\\hub', 'value')).toBe('--root=C:\\h\\a');
+      expect(expandPathPlaceholders('file://${HOME}/a', 'C:\\h', 'C:\\hub', 'url')).toBe('file://C:\\h/a');
       expect(expandPathPlaceholders('~user/x', '/h', '/hub')).toBe('~user/x');
       expect(expandPathPlaceholders('~\\x', '/h', '/hub')).toBe('~\\x');
       // args and env values: only when the whole value is a path
