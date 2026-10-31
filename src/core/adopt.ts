@@ -449,7 +449,7 @@ function toolPackage(real: string): { install: string; how: string } | null {
       const fd = fs.openSync(real, 'r');
       try {
         const buf = Buffer.alloc(512);
-        const head = buf.toString('utf-8', 0, fs.readSync(fd, buf, 0, 512, 0)).split(/\r?\n/)[0];
+        const head = buf.toString('utf-8', 0, fs.readSync(fd, buf, 0, 512, 0)).split(/\r?\n/)[0].replace(/\\/g, '/');
         pipx = /^#!.*\/pipx\/venvs\/([A-Za-z0-9][\w.-]*)\//.exec(head)?.[1];
       } finally {
         fs.closeSync(fd);
