@@ -1,11 +1,13 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ensureDir, findExecutable, getUtcTimestamp, safeWriteFile } from '../utils/fs.js';
+import { ensureDir, findExecutable, getUtcTimestamp, isJunctionOrSymlink, isWithin, safeWriteFile } from '../utils/fs.js';
 import { getHubDir } from './detector.js';
 import { isScaffoldDefault } from './scaffold.js';
 import { projectCodexSkillManifests } from './linker.js';
 import { projectAll } from './projector.js';
+import { ignoredNames } from './local.js';
+import { listSkillCollections } from './skill-check.js';
 
 export interface GitStatusResult {
   git_installed: boolean;
@@ -34,6 +36,11 @@ export const STANDARD_IGNORE_ENTRIES = [
   '*.env',
   '/vendor/',
   '/mcp/origins.json',
+  '/local.json',
+  '/export/',
+  '/skills/synced/',
+  '/skills/codex-primary-runtime/',
+  '/skills/.*/',
 ];
 
 export const MANAGED_BLOCK_START = '# >>> agenthub managed (do not edit)';
@@ -179,6 +186,83 @@ export function updateManagedIgnoreBlock(hubDir: string, entries: string[]): voi
   const block = sorted.length > 0 ? [MANAGED_BLOCK_START, ...sorted, MANAGED_BLOCK_END] : [];
   const next = [...kept, ...block].join(eol) + (kept.length + block.length > 0 ? eol : '');
   if (next !== existing) safeWriteFile(gitignorePath, next);
+}
+
+const EXCLUDE_START = '# >>> agenthub machine-specific skill links';
+const EXCLUDE_END = '# <<< agenthub machine-specific skill links';
+
+const stripExtended = (p: string): string => p.replace(/^\\\\\?\\/, '');
+
+/** realpath of the nearest existing ancestor plus the missing rest, without Windows' \\?\ prefix. */
+function realish(p: string): string {
+  let cur = path.resolve(stripExtended(p));
+  const rest: string[] = [];
+  while (!fs.existsSync(cur)) {
+    const up = path.dirname(cur);
+    if (up === cur) return path.resolve(p);
+    rest.unshift(path.basename(cur));
+    cur = up;
+  }
+  return path.join(stripExtended(fs.realpathSync(cur)), ...rest);
+}
+
+/**
+ * Keeps what only works on this machine out of a commit, and returns the hub-relative
+ * paths (skills/<name>) that must not be tracked (collections, ignored skills, outside links).
+ * Collections are covered by the static .gitignore entries. Locally ignored skills and
+ * skill symlinks or junctions that leave the hub or point into vendor/ go to a section of
+ * .git/info/exclude, never to the committed .gitignore, which has to be identical on every machine.
+ */
+export function ignoreMachineSpecificSkills(hubDir: string): string[] {
+  const skillsDir = path.join(hubDir, 'skills');
+  const ignoredSkills = [...ignoredNames(hubDir, 'skills')];
+  const names = [...listSkillCollections(skillsDir), ...ignoredSkills];
+
+  const hub = realish(hubDir);
+  const vendor = path.join(hub, 'vendor');
+  const links: string[] = [];
+  try {
+    for (const entry of fs.readdirSync(skillsDir)) {
+      const link = path.join(skillsDir, entry);
+      if (!isJunctionOrSymlink(link)) continue;
+      const dest = realish(path.resolve(skillsDir, stripExtended(fs.readlinkSync(link))));
+      if (!isWithin(hub, dest) || isWithin(vendor, dest)) links.push(entry);
+    }
+  } catch {
+    // no skills folder
+  }
+  const exclude = path.join(hubDir, '.git', 'info', 'exclude');
+  if (fs.existsSync(path.join(hubDir, '.git'))) {
+    let existing = '';
+    try {
+      existing = fs.readFileSync(exclude, 'utf-8');
+    } catch {
+      // no exclude file yet
+    }
+    const lines = existing.split(/\r?\n/);
+    const start = lines.indexOf(EXCLUDE_START);
+    const end = start >= 0 ? lines.indexOf(EXCLUDE_END, start) : -1;
+    const kept = start >= 0 ? [...lines.slice(0, start), ...(end >= 0 ? lines.slice(end + 1) : [])] : lines;
+    while (kept.length > 0 && kept[kept.length - 1] === '') kept.pop();
+    // machine-specific only: the committed .gitignore must be the same on every machine
+    const listed = [...new Set([...ignoredSkills, ...links])].map((n) => `/skills/${n}`).sort();
+    const next = [...kept, ...(listed.length > 0 ? [EXCLUDE_START, ...listed, EXCLUDE_END] : [])].join('\n') + '\n';
+    if (next.trim() !== existing.trim()) {
+      ensureDir(path.dirname(exclude));
+      fs.writeFileSync(exclude, next, 'utf-8');
+    }
+  }
+  return [...new Set([...names, ...links])].sort().map((n) => `skills/${n}`);
+}
+
+/** Untracks (keeping the files on disk) whatever of `paths` git already tracks; returns those paths. */
+function untrackIgnored(hub: string, paths: string[]): string[] {
+  const untracked: string[] = [];
+  for (const p of paths) {
+    if (!runGit(['ls-files', '-z', '--', p], hub).stdout) continue;
+    if (runGit(['rm', '-r', '--cached', '-q', '--ignore-unmatch', '--', p], hub).status === 0) untracked.push(p);
+  }
+  return untracked;
 }
 
 /**
@@ -368,6 +452,9 @@ export function gitPush(
     }
   }
 
+  const untracked = untrackIgnored(hub, [...ignoreMachineSpecificSkills(hub), 'export']);
+  const untrackNote = untracked.length > 0 ? ` Stopped tracking ${untracked.join(', ')} (machine-specific or ignored; the files stay on disk).` : '';
+
   // Stage changes
   const addRes = runGit(['add', '-A'], hub);
   if (addRes.status !== 0) {
@@ -411,7 +498,7 @@ export function gitPush(
   if (!status.remotes[remoteName]) {
     return {
       ok: true,
-      message: 'Changes committed locally. No remote configured, skipping push.',
+      message: `Changes committed locally. No remote configured, skipping push.${untrackNote}`,
     };
   }
 
@@ -429,7 +516,7 @@ export function gitPush(
 
   return {
     ok: true,
-    message: redactGitSecrets(`Pushed changes to ${remoteName}/${pushBranch}`),
+    message: redactGitSecrets(`Pushed changes to ${remoteName}/${pushBranch}${untrackNote ? `.${untrackNote}` : ''}`),
   };
 }
 

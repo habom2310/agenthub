@@ -90,7 +90,9 @@ describe('scaffold', () => {
       expect(manifest.version).toBe('0.1.0');
       expect(manifest.platforms.claude.enabled).toBe(true);
       expect(manifest.platforms.antigravity.enabled).toBe(true);
-      expect(manifest.links.skills).toBe(path.join(hubDir, 'skills'));
+      // the committed manifest holds no machine-specific absolute paths
+      expect(manifest.links).toBeUndefined();
+      expect(JSON.stringify(manifest)).not.toContain(hubDir);
     });
 
     it('creates pre-agenthub backup during initialization', () => {

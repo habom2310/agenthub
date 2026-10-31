@@ -6,6 +6,7 @@ import { getHomeDir, getHubDir } from './detector.js';
 import { ensureGitignore, readManagedIgnoreBlock, updateManagedIgnoreBlock } from './git-sync.js';
 import { loadManifest, setDeclaredSource } from './manifest.js';
 import { readJsonSafely, type McpServerConfig } from './mcp-sync.js';
+import { ignoredNames } from './local.js';
 import {
   emptyLock,
   isPinned,
@@ -32,7 +33,8 @@ export interface InstallAction {
   type: DeclaredSource['parsed']['type'];
   /** Exact commands that will run, one display line each */
   commands: string[];
-  reason: 'missing' | 'outdated';
+  /** check/manual: a custom item whose state is only known once its check runs */
+  reason: 'missing' | 'outdated' | 'check' | 'manual';
   decl: DeclaredSource;
   pin?: LockEntry;
 }
@@ -51,7 +53,12 @@ export interface InstallPlan {
 }
 
 export interface InstallResult {
+  /** Items agenthub actually installed or built */
   installed: string[];
+  /** Custom items whose check passed, so nothing ran */
+  already: string[];
+  /** Check failed and no install command is declared: the user installs it */
+  manual: InstallProblem[];
   failed: InstallProblem[];
 }
 
@@ -209,8 +216,10 @@ function hubMcpServers(hub: string): Record<string, McpServerConfig> {
 }
 
 /** Lock entries for declared, pinned items only. */
-function prunedLock(lock: LockFile, sources: DeclaredSource[]): LockFile {
+function prunedLock(lock: LockFile, sources: DeclaredSource[], hub: string): LockFile {
   const out = emptyLock();
+  // pins of locally ignored servers stay in the shared lockfile
+  for (const n of ignoredNames(hub, 'mcp')) if (lock.mcp[n]) out.mcp[n] = lock.mcp[n];
   for (const d of sources) {
     const entry = lock[d.kind][d.name];
     if (isPinned(d) && entry) out[d.kind][d.name] = entry;
@@ -314,8 +323,10 @@ export async function planInstall(hubDir?: string): Promise<InstallPlan> {
             item: decl.name,
             kind: decl.kind,
             type: p.type,
-            commands: [`check:   ${p.check}`, `install: ${p.install}  (only if check fails)`],
-            reason: 'missing',
+            commands: p.install
+              ? [`check:   ${p.check}`, `install: ${p.install}  (only if check fails)`]
+              : [`check:   ${p.check}`, 'no install command: if the check fails, install it yourself, then re-run'],
+            reason: p.install ? 'check' : 'manual',
             decl,
           });
           break;
@@ -325,6 +336,7 @@ export async function planInstall(hubDir?: string): Promise<InstallPlan> {
     }
   }
 
+  for (const n of ignoredNames(hub, 'mcp')) if (loaded.mcp[n]) lock.mcp[n] = loaded.mcp[n];
   return { hub, actions, errors, warnings, lock };
 }
 
@@ -421,7 +433,9 @@ function installFromNpm(hub: string, a: InstallAction): void {
   }
 }
 
-function runAction(hub: string, a: InstallAction): void {
+type ActionOutcome = 'installed' | 'already' | 'manual';
+
+function runAction(hub: string, a: InstallAction): ActionOutcome {
   const p = a.decl.parsed;
   switch (p.type) {
     case 'github':
@@ -436,31 +450,37 @@ function runAction(hub: string, a: InstallAction): void {
       break;
     case 'custom':
       // check first: an already-installed tool is left alone
-      if (runtime.shell(p.check, hub).status === 0) return;
+      if (runtime.shell(p.check, hub).status === 0) return 'already';
+      if (!p.install) return 'manual';
       shellOrThrow(p.install, hub, 'install');
       if (runtime.shell(p.check, hub).status !== 0) throw new Error('install ran but its check command still fails');
-      return;
+      return 'installed';
     default:
-      return;
+      return 'installed';
   }
   recordState(hub, a.decl, a.pin);
+  return 'installed';
 }
 
 /** Runs every planned action. A failure in one item does not stop the others. */
 export function runInstall(plan: InstallPlan): InstallResult {
   const installed: string[] = [];
+  const already: string[] = [];
+  const manual: InstallProblem[] = [];
   const failed: InstallProblem[] = [];
   for (const a of plan.actions) {
     try {
-      runAction(plan.hub, a);
-      installed.push(actionLabel(a));
+      const outcome = runAction(plan.hub, a);
+      if (outcome === 'installed') installed.push(actionLabel(a));
+      else if (outcome === 'already') already.push(actionLabel(a));
+      else manual.push({ item: actionLabel(a), message: `install it yourself, then re-run (check: ${(a.decl.parsed as { check: string }).check})` });
     } catch (err) {
       failed.push({ item: actionLabel(a), message: (err as Error).message });
     }
   }
   if (!isBareHub(plan.hub)) saveLock(plan.hub, plan.lock);
-  failed.push(...finalizeInstall(plan.hub, failed.map((f) => f.item)));
-  return { installed, failed };
+  failed.push(...finalizeInstall(plan.hub, [...failed, ...manual].map((f) => f.item)));
+  return { installed, already, manual, failed };
 }
 
 /** Keeps generated npx/uvx entries in servers.json on the locked version. */
@@ -512,6 +532,7 @@ export function finalizeInstall(hubDir?: string, skipItems: string[] = []): Inst
   if (isBareHub(hub) && previouslyManaged.size === 0) return [];
   const problems = syncGeneratedMcp(hub, sources, lock);
   const linked = new Set<string>();
+  const ignoredSkills = ignoredNames(hub, 'skills');
 
   for (const d of sources) {
     if (d.kind !== 'skills' || d.parsed.type === 'local') continue;
@@ -540,7 +561,7 @@ export function finalizeInstall(hubDir?: string, skipItems: string[] = []): Inst
     const vendorRoot = path.join(hub, 'vendor');
     for (const entry of fs.readdirSync(skillsDir)) {
       const link = path.join(skillsDir, entry);
-      if (linked.has(entry) || !isJunctionOrSymlink(link)) continue;
+      if (linked.has(entry) || ignoredSkills.has(entry) || !isJunctionOrSymlink(link)) continue;
       const dest = path.resolve(skillsDir, fs.readlinkSync(link));
       if (previouslyManaged.has(entry) || isWithin(vendorRoot, dest)) fs.unlinkSync(link);
     }
@@ -613,6 +634,6 @@ export async function updatePins(
       errors.push({ item: itemLabel(decl.kind, decl.name), message: (err as Error).message });
     }
   }
-  saveLock(hub, prunedLock(lock, sources));
+  saveLock(hub, prunedLock(lock, sources, hub));
   return { changes, errors };
 }

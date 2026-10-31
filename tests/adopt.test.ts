@@ -121,7 +121,7 @@ describe('adopt', () => {
       expect(p).toMatchObject({
         confident: false,
         needs: 'install',
-        spec: { install: '', check: 'test -f "$HOME/.local/share/ripwire/skills/one/SKILL.md"', path: '~/.local/share/ripwire/skills/one' },
+        spec: { check: 'test -f "$HOME/.local/share/ripwire/skills/one/SKILL.md"', path: '~/.local/share/ripwire/skills/one' },
       });
       expect(find(items, 'skills', 'two')).toBeDefined();
     });
@@ -235,7 +235,7 @@ describe('adopt', () => {
       expect(find(scanAdoptable(home, hub), 'mcp', 'tool').proposal).toMatchObject({
         confident: false,
         needs: 'install',
-        spec: { install: '', check: 'command -v agenthub-fake-tool' },
+        spec: { check: 'command -v agenthub-fake-tool' },
       });
     });
 
@@ -271,7 +271,7 @@ describe('adopt', () => {
       claudeJson({ hook: { command: script } });
       const p = find(scanAdoptable(home, hub), 'mcp', 'hook').proposal;
       expect(p?.move).toBeUndefined();
-      expect(p).toMatchObject({ confident: false, needs: 'install', spec: { install: '', check: 'test -e "$HOME/.claude/hooks/my-mcp.sh"' } });
+      expect(p).toMatchObject({ confident: false, needs: 'install', spec: { check: 'test -e "$HOME/.claude/hooks/my-mcp.sh"' } });
       expect(p?.note).toContain('holds other files too');
     });
 
@@ -291,8 +291,78 @@ describe('adopt', () => {
       claudeJson({ srv: { command: bin } });
       const p = find(scanAdoptable(home, hub), 'mcp', 'srv').proposal;
       expect(p?.move).toBeUndefined();
-      expect(p).toMatchObject({ spec: { install: '', check: 'command -v my-server' }, needs: 'install' });
+      expect(p).toMatchObject({ spec: { check: 'command -v my-server' }, needs: 'install' });
       expect(p?.note).toContain('managed by a tool');
+    });
+
+    describe('PATH-installed binaries', () => {
+      let savedPath: string | undefined;
+      beforeEach(() => {
+        savedPath = process.env.PATH;
+      });
+      afterEach(() => {
+        process.env.PATH = savedPath;
+      });
+      const exe = (file: string, content: string) => {
+        safeWriteFile(file, content);
+        fs.chmodSync(file, 0o755);
+      };
+
+      it('a pipx script found on PATH under its bare name: portable command and pipx install', async () => {
+        const real = path.join(home, '.local', 'pipx', 'venvs', 'entain-mcp-connect', 'bin', 'entain-mcp-connect');
+        exe(real, `#!${path.join(home, '.local', 'pipx', 'venvs', 'entain-mcp-connect', 'bin', 'python')}\n`);
+        const link = path.join(home, '.local', 'bin', 'entain-mcp-connect');
+        ensureDir(path.dirname(link));
+        fs.symlinkSync(real, link);
+        process.env.PATH = `${path.dirname(link)}${path.delimiter}${savedPath}`;
+        claudeJson({ 'entain-gitlab': { command: link, args: ['--x'] } });
+
+        const p = find(scanAdoptable(home, hub), 'mcp', 'entain-gitlab').proposal;
+        expect(p).toMatchObject({
+          confident: false,
+          spec: { install: 'pipx install entain-mcp-connect', check: 'command -v entain-mcp-connect' },
+          rewrite: { from: link, to: 'entain-mcp-connect' },
+        });
+        expect(p?.needs).toBeUndefined();
+        expect(p?.note).toContain('becomes "entain-mcp-connect"');
+
+        await runAdopt({ homeDir: home, hubDir: hub, prompter: { choose: async () => 'accept', ask: async () => '' } });
+        expect(hubServers()['entain-gitlab']).toEqual({ command: 'entain-mcp-connect', args: ['--x'] });
+      });
+
+      it('a pipx script named only by its shebang is recognised from the file, nothing is executed', () => {
+        const venv = path.join(home, '.local', 'pipx', 'venvs', 'tool-pkg');
+        exe(path.join(tmp, 'elsewhere', 'tool'), `#!${venv}/bin/python\nprint(1)\n`);
+        // the binary is not inside the venv, but it is on PATH (a copy), so it counts as tool-managed
+        process.env.PATH = `${path.join(tmp, 'elsewhere')}${path.delimiter}${savedPath}`;
+        claudeJson({ t: { command: path.join(tmp, 'elsewhere', 'tool') } });
+        expect(find(scanAdoptable(home, hub), 'mcp', 't').proposal?.spec).toEqual({ install: 'pipx install tool-pkg', check: 'command -v tool' });
+      });
+
+      it('keeps the path when the bare name does not resolve to the same file', () => {
+        const real = path.join(home, '.local', 'bin', 'my-srv');
+        exe(real, '#!/bin/sh\n');
+        exe(path.join(tmp, 'other', 'my-srv'), '#!/bin/sh\n');
+        process.env.PATH = `${path.join(tmp, 'other')}${path.delimiter}${savedPath}`;
+        claudeJson({ s: { command: real } });
+        const p = find(scanAdoptable(home, hub), 'mcp', 's').proposal;
+        expect(p?.rewrite).toBeUndefined();
+        expect(p?.note).not.toContain('becomes');
+        expect(p?.needs).toBe('install');
+      });
+
+      it('an npm global package proposes npm install -g, scoped names included', () => {
+        const prefix = path.join(home, '.nvm', 'versions', 'node', 'v20');
+        const real = path.join(prefix, 'lib', 'node_modules', '@acme', 'mcp-thing', 'bin', 'cli.js');
+        exe(real, '#!/usr/bin/env node\n');
+        const link = path.join(prefix, 'bin', 'mcp-thing');
+        ensureDir(path.dirname(link));
+        fs.symlinkSync(real, link);
+        claudeJson({ n: { command: link } });
+        const p = find(scanAdoptable(home, hub), 'mcp', 'n').proposal;
+        expect(p?.spec).toEqual({ install: 'npm install -g @acme/mcp-thing', check: 'command -v mcp-thing' });
+        expect(p?.confident).toBe(false);
+      });
     });
 
     it('a remote server has nothing to adopt, and a declared one is skipped', () => {
@@ -365,12 +435,18 @@ describe('adopt', () => {
       expect((loadManifest(hub) as any).skills).toEqual({ plain: 'local' });
     });
 
-    it('accept with an install command declares the custom source; an empty one skips', async () => {
+    it('accept with an install command declares the custom source; an empty one is check-only', async () => {
       const tool = path.join(home, '.local', 'share', 't', 'skills', 'ts');
       mkSkill(tool, 'ts');
       fs.symlinkSync(tool, path.join(home, '.claude', 'skills', 'ts'));
-      const skipped = await runAdopt({ homeDir: home, hubDir: hub, prompter: prompter({ 'skills:ts': 'accept' }, ['']) });
-      expect(skipped.applied).toEqual([]);
+      const checkOnly = await runAdopt({ homeDir: home, hubDir: hub, prompter: prompter({ 'skills:ts': 'accept' }, ['']) });
+      expect(checkOnly.applied).toHaveLength(1);
+      expect((loadManifest(hub) as any).skills.ts).toEqual({
+        check: 'test -f "$HOME/.local/share/t/skills/ts/SKILL.md"',
+        path: '~/.local/share/t/skills/ts',
+      });
+      fs.rmSync(path.join(hub, 'agenthub.json'));
+      safeWriteFile(path.join(hub, 'agenthub.json'), JSON.stringify({ name: 'h' }));
 
       const report = await runAdopt({ homeDir: home, hubDir: hub, prompter: prompter({ 'skills:ts': 'accept' }, ['tool install ts']) });
       expect(report.applied).toHaveLength(1);

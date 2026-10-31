@@ -306,7 +306,11 @@ function performChecks(
         if (st.untracked.length) details.push(`untracked in ${st.label}: ${st.untracked.join(', ')}`);
         const drift = st.drifted.filter((n) => !st.conflicted.includes(n));
         if (drift.length) details.push(`drifted in ${st.label}: ${drift.join(', ')}`);
-        if (st.conflicted.length) details.push(`conflict in ${st.label} (its own entry, not the hub's): ${st.conflicted.join(', ')}`);
+        if (st.conflicted.length) {
+          details.push(
+            `conflict in ${st.label} (its own entry, not the hub's): ${st.conflicted.join(', ')} - run \`agenthub mcp sync --force\` to overwrite it with the hub's version (a backup is kept), or rename one of them`
+          );
+        }
       }
       issues.push(`MCP registry out of sync: ${details.join('; ') || 'discrepancies detected'}`);
     }

@@ -12,9 +12,11 @@ import {
   checkSkillDir,
   findDuplicateSkills,
   listSkillEntries,
+  skillCollection,
   skillResolves,
   type CheckLevel,
 } from './skill-check.js';
+import { ignoredNames, readIgnored } from './local.js';
 import { loadDeclaredSources, loadLock, pinOf, runtime } from './sources.js';
 
 export type DoctorGroup = 'setup' | 'skills' | 'sources' | 'mcp';
@@ -48,7 +50,7 @@ export interface FullDoctorResult {
 }
 
 export const countLevels = (items: DoctorItem[]): Record<CheckLevel, number> => {
-  const counts: Record<CheckLevel, number> = { PASS: 0, WARN: 0, FAIL: 0 };
+  const counts: Record<CheckLevel, number> = { PASS: 0, INFO: 0, WARN: 0, FAIL: 0 };
   for (const i of items) counts[i.level]++;
   return counts;
 };
@@ -66,8 +68,9 @@ function hubServers(hub: string, home: string): Record<string, McpServerConfig> 
   const read = readJsonSafely<{ mcpServers?: Record<string, McpServerConfig> }>(path.join(hub, 'mcp', 'servers.json'));
   const raw = read.data.mcpServers;
   const out: Record<string, McpServerConfig> = {};
+  const ignored = ignoredNames(hub, 'mcp');
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    for (const [name, cfg] of Object.entries(raw)) if (cfg && typeof cfg === 'object') out[name] = expandServerPaths(cfg, home, hub);
+    for (const [name, cfg] of Object.entries(raw)) if (!ignored.has(name) && cfg && typeof cfg === 'object') out[name] = expandServerPaths(cfg, home, hub);
   }
   return out;
 }
@@ -155,13 +158,29 @@ export function skillItems(home: string, hub: string): DoctorItem[] {
   const hubNames: string[] = [];
 
   for (const entry of fs.existsSync(hubSkills) ? fs.readdirSync(hubSkills).sort() : []) {
-    if (entry.startsWith('.')) continue;
     const dir = path.join(hubSkills, entry);
     try {
       fs.lstatSync(dir);
     } catch {
       continue;
     }
+    const collection = skillCollection(hubSkills, entry);
+    if (collection) {
+      if (collection.kind === 'known') {
+        items.push({ group: 'skills', name: `collection ${entry}`, level: 'PASS', message: `${collection.nested} nested skills (managed by ${collection.owner})` });
+      } else if (collection.kind === 'dot') {
+        items.push({ group: 'skills', name: `collection ${entry}`, level: 'INFO', message: `${collection.nested} nested skills, not committed` });
+      } else {
+        items.push({
+          group: 'skills',
+          name: `collection ${entry}`,
+          level: 'WARN',
+          message: 'looks like a skill collection; not managed by agenthub, will be committed',
+        });
+      }
+      continue;
+    }
+    if (entry.startsWith('.')) continue;
     if (!fs.existsSync(dir)) {
       items.push({ group: 'skills', name: skillName(entry), level: 'FAIL', message: `broken link ${path.relative(hub, dir)} (run: agenthub install)` });
       continue;
@@ -193,7 +212,7 @@ export function skillItems(home: string, hub: string): DoctorItem[] {
 
     // skills that live only in this assistant's own folder
     if (a.linked && fs.existsSync(a.linked) && !isLinkTo(a.linked, hubSkills) && !fs.lstatSync(a.linked).isSymbolicLink()) {
-      const own = listSkillEntries(a.linked).filter((n) => !hubNames.includes(n));
+      const own = listSkillEntries(a.linked).filter((n) => !hubNames.includes(n) && !skillCollection(a.linked as string, n));
       const problems = own.flatMap((n) => checkSkillDir(path.join(a.linked as string, n), n).map((i) => ({ ...i, message: `${n}: ${i.message}` })));
       if (own.length > 0) {
         items.push({
@@ -241,11 +260,17 @@ export async function sourceItems(hub: string, functional: boolean): Promise<Doc
     if (d.parsed.type === 'custom') {
       if (!functional) continue;
       const res = runtime.shell(d.parsed.check, hub);
+      const manual = res.status !== 0 && !d.parsed.install;
       items.push({
         group: 'sources',
         name: label,
-        level: res.status === 0 ? 'PASS' : 'FAIL',
-        message: res.status === 0 ? `check passed: ${d.parsed.check}` : `check failed (exit ${res.status}): ${d.parsed.check}; install: ${d.parsed.install || 'not declared'}`,
+        level: res.status === 0 ? 'PASS' : manual ? 'WARN' : 'FAIL',
+        message:
+          res.status === 0
+            ? `check passed: ${d.parsed.check}`
+            : manual
+              ? `not installed (check failed, exit ${res.status}): ${d.parsed.check}; install it yourself, then re-run`
+              : `check failed (exit ${res.status}): ${d.parsed.check}; install: ${d.parsed.install}`,
       });
       continue;
     }
@@ -285,6 +310,9 @@ export async function runFunctionalChecks(options: FullDoctorOptions = {}): Prom
   } catch (err) {
     items.push({ group: 'sources', name: 'sources', level: 'FAIL', message: (err as Error).message });
   }
+  const ignored = readIgnored(hub);
+  const names = [...ignored.mcp, ...ignored.skills];
+  if (names.length > 0) items.push({ group: 'setup', name: 'ignored (local)', level: 'INFO', message: names.join(', ') });
   items.push(...varItems(home, hub));
   if (functional) items.push(...(await mcpItems(home, hub, options)));
   return items;

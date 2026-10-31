@@ -83,6 +83,18 @@ function resolveDefaultTemplateDir(): string | null {
   return null;
 }
 
+/** The MCP servers the default template ships (mcp/servers.json), by name. */
+export function defaultTemplateServers(): Record<string, unknown> {
+  const dir = resolveDefaultTemplateDir();
+  if (!dir) return {};
+  try {
+    const servers = JSON.parse(fs.readFileSync(path.join(dir, 'mcp', 'servers.json'), 'utf-8'))?.mcpServers;
+    return servers && typeof servers === 'object' && !Array.isArray(servers) ? servers : {};
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Performs a safe whitelist backup of targeted configuration files
  * from ~/.claude, ~/.gemini, ~/.codex and the Cursor, Windsurf and Copilot MCP configs to prevent data loss.
@@ -419,9 +431,6 @@ export function initHub(options?: ScaffoldOptions): ScaffoldResult {
     created_at: new Date().toISOString(),
     platforms,
     mcp: DEFAULT_MANIFEST_MCP,
-    links: {
-      skills: path.join(hub, 'skills'),
-    },
   };
 
   if (!fs.existsSync(manifestFile) || force) {

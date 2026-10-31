@@ -118,6 +118,9 @@ agenthub add git@github.com:my-team/agent-setup.git              # install from 
 The hub records where each one comes from (`local`, `github:owner/repo#subpath`, `npm:pkg@range`, `pypi:pkg@range`, or a custom install command) in `agenthub.json`.
 `agenthub.lock.json` pins the exact commit or version.
 `agenthub push` commits your own skills and the declarations, never third-party copies.
+Folders an assistant manages itself (Claude's `synced/`, Codex's `.system/`) and links to machine-specific paths are never committed.
+Work-only servers and skills stay on your machine with `agenthub ignore mcp <name>` (a gitignored `local.json`).
+A custom source needs only a `check`; `install` is optional, and without it a failing check is a warning that tells you to install the item yourself.
 
 ```bash
 agenthub setup && agenthub git init --remote-url git@github.com:you/my-setup.git

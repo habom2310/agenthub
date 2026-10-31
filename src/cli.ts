@@ -44,6 +44,11 @@ import {
   setCustomHome,
   shareSetup,
   syncMcpServers,
+  adoptStarterOverrides,
+  readIgnored,
+  updateIgnored,
+  ignoreMachineSpecificSkills,
+  purgeIgnoredMcp,
   getMcpStatus,
   uninstallHub,
   updatePins,
@@ -150,6 +155,8 @@ export function buildCli(): Command {
     const hub = getHubDir();
     const home = getHomeDir();
     const blockers: string[] = [];
+    // before planning, so a starter the user replaced with their own is not installed
+    for (const a of adoptStarterOverrides({ homeDir: home, hubDir: hub })) console.log(pc.dim(`  ${a}`));
     const plan = await planInstall(hub);
 
     for (const e of plan.errors) {
@@ -161,6 +168,7 @@ export function buildCli(): Command {
     }
 
     let installedCount = 0;
+    let manualCount = 0;
     let declined = false;
     if (plan.actions.length > 0) {
       console.log(pc.bold(`Install plan (${plan.actions.length}):`));
@@ -176,7 +184,12 @@ export function buildCli(): Command {
       if (approved) {
         const result = runInstall(plan);
         installedCount = result.installed.length;
+        for (const item of result.already) console.log(pc.green(`✓ ${item.replace(/^(skill|mcp) /, '')}: already installed (check passed)`));
         for (const item of result.installed) console.log(pc.green(`✓ Installed ${item}`));
+        for (const m of result.manual) {
+          manualCount++;
+          console.log(pc.yellow(`⚠ ${m.item}: ${m.message}`));
+        }
         for (const f of result.failed) {
           console.error(pc.red(`✗ ${f.item}: ${f.message}`));
           blockers.push(`${f.item}: ${f.message}`);
@@ -201,13 +214,15 @@ export function buildCli(): Command {
       syncMcpServers({ homeDir: home, hubDir: hub });
     }
     if (blockers.length === 0 && !declined) {
-      console.log(pc.green(`✓ Skills and MCP servers are installed${installedCount ? ` (${installedCount} new)` : ''}`));
+      if (manualCount > 0) console.log(pc.yellow(`${manualCount} item(s) need a manual install, see above`));
+      else console.log(pc.green(`✓ Skills and MCP servers are installed${installedCount ? ` (${installedCount} new)` : ''}`));
     }
     return { blockers, approved };
   }
 
   const LEVEL_TAG: Record<DoctorItem['level'], string> = {
     PASS: pc.green('[PASS]'),
+    INFO: pc.cyan('[INFO]'),
     WARN: pc.yellow('[WARN]'),
     FAIL: pc.red('[FAIL]'),
   };
@@ -452,6 +467,13 @@ export function buildCli(): Command {
             '\nPlease resolve the blocker(s) above (e.g. fix file permissions or broken paths).'
           )
         );
+        if (doctorRes.issues.some((i) => i.includes('conflict in '))) {
+          console.log(
+            pc.dim('An MCP conflict is never overwritten automatically: run ') +
+              pc.cyan('agenthub mcp sync --force') +
+              pc.dim(" (the hub's version wins, a backup is kept) or rename one of the entries.")
+          );
+        }
         console.log(
           pc.dim('Once addressed, run ') +
             pc.cyan('agenthub doctor --fix') +
@@ -622,6 +644,42 @@ export function buildCli(): Command {
         console.error(pc.red(`✗ ${(err as Error).message}`));
         process.exitCode = 1;
       }
+    });
+
+  // 6c. ignore
+  program
+    .command('ignore [kind] [names...]')
+    .description('Keep work-only MCP servers or skills out of the shared hub (machine-local list in local.json)')
+    .option('--remove', 'Remove the names from the ignore list')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action((kind: string | undefined, names: string[], options) => {
+      applyHomeOverride(options);
+      const hub = getHubDir();
+      if (!kind) {
+        const list = readIgnored(hub);
+        console.log(`mcp:    ${list.mcp.join(', ') || pc.dim('none')}`);
+        console.log(`skills: ${list.skills.join(', ') || pc.dim('none')}`);
+        return;
+      }
+      const key = kind === 'mcp' ? 'mcp' : kind === 'skill' || kind === 'skills' ? 'skills' : null;
+      if (!key || names.length === 0) {
+        console.error(pc.red('✗ Usage: agenthub ignore [--remove] <mcp|skill> <name...>'));
+        process.exitCode = 1;
+        return;
+      }
+      const bad = names.find((n) => n === '.' || n === '..' || !/^[A-Za-z0-9_][\w.-]*$/.test(n));
+      if (bad !== undefined) {
+        console.error(pc.red(`✗ Invalid name "${bad}": use letters, digits, "_", "." and "-", starting with a letter, digit or "_"`));
+        process.exitCode = 1;
+        return;
+      }
+      updateIgnored(hub, key, names, Boolean(options.remove));
+      console.log(pc.green(`✓ ${options.remove ? 'No longer ignoring' : 'Ignoring'} ${key === 'mcp' ? 'mcp' : 'skill'}: ${names.join(', ')}`));
+      if (!options.remove && key === 'mcp') {
+        // one-time cleanup of the shared hub files; later syncs only filter the name
+        for (const a of purgeIgnoredMcp(hub)) console.log(pc.dim(`  ${a}`));
+      }
+      if (!options.remove && key === 'skills') ignoreMachineSpecificSkills(hub);
     });
 
   // 7. budget
@@ -797,7 +855,7 @@ export function buildCli(): Command {
               st.missing.length ? `missing: ${st.missing.join(', ')}` : '',
               st.untracked.length ? `untracked: ${st.untracked.join(', ')}` : '',
               st.drifted.length ? `drifted: ${st.drifted.join(', ')}` : '',
-              st.conflicted.length ? `conflict (its own entry): ${st.conflicted.join(', ')}` : '',
+              st.conflicted.length ? `conflict (its own entry): ${st.conflicted.join(', ')}; run agenthub mcp sync --force, or rename one` : '',
             ].filter(Boolean);
             console.log(`  ${label}${Object.keys(st.servers).join(', ') || pc.dim('none')}${notes.length ? pc.yellow(`  (${notes.join('; ')})`) : ''}`);
           }
