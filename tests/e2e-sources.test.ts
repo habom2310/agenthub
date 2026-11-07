@@ -34,7 +34,8 @@ describe.skipIf(process.platform === 'win32')('E2E: declared skills and MCP serv
     process.exitCode = undefined;
     if (savedTools === undefined) delete process.env.E2E_TOOLS;
     else process.env.E2E_TOOLS = savedTools;
-    fs.rmSync(tmp, { recursive: true, force: true });
+    // git can still be finishing background writes in tmp; retry on ENOTEMPTY
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   it('old machine pushes declarations only; new machine setup + pull --yes installs them', async () => {
