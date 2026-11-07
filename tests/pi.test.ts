@@ -60,7 +60,11 @@ describe('Pi', () => {
       fs.chmodSync(exe, 0o755);
       process.env.PATH = bin; // only pi: a codex binary here would count as Codex and create ~/.codex
       expect(piInstalled(home)).toBe(false);
-      expect(detectPlatforms().platforms.pi).toMatchObject({ detected: false, bin_path: exe });
+      const pi = detectPlatforms().platforms.pi;
+      expect(pi.detected).toBe(false);
+      // Windows resolves via PATHEXT, which is upper case (pi.CMD)
+      const norm = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p);
+      expect(norm(pi.bin_path)).toBe(norm(exe));
 
       // a real ~/.agents/skills folder must not be migrated, and nothing is created for Pi
       safeWriteFile(path.join(home, '.agents', 'skills', 'keep', 'SKILL.md'), '# keep');
