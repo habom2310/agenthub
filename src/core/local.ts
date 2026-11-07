@@ -5,7 +5,7 @@ import { stateFile } from './state.js';
 
 export type IgnoreKind = 'mcp' | 'skills';
 
-/** Machine-local ignore list in hub/local.json (gitignored): names only, exact match. */
+/** Machine-local ignore list (see state.ts for its location): names only, exact match. */
 export function localPath(hub: string): string {
   return stateFile(hub, 'local.json');
 }
