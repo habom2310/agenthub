@@ -107,7 +107,7 @@ Your configuration lives in a central hub (`~/.agenthub` or `$AGENTHUB_HUB`):
 ```text
 ~/.agenthub/
 ├── agenthub.json          # Hub manifest, platform metadata, and skill/MCP source declarations
-├── agenthub.lock.json     # Pinned commits and versions for declared sources (tracked)
+├── agenthub.lock.json     # Pinned commits and versions, and content hashes, for declared sources (tracked)
 ├── rules/                 # Universal markdown engineering heuristics
 │   ├── common.md          # Core heuristics (thinking, simplicity, surgical changes)
 │   ├── code-tools.md      # Tool usage reflexes (Ripwire, CodeGraph, rg)
@@ -175,7 +175,7 @@ A config file that does not parse is never overwritten: the sync reports `[SKIP]
 An entry that an assistant has under the same name as a hub server, but with a different config that agenthub never wrote or ingested there, is reported as `[CONFLICT]` and left alone, on all six assistants.
 `agenthub doctor --fix` reports it and leaves it alone too.
 Only an explicit `agenthub mcp sync --force` overwrites it, after copying each file it changes to `backups/mcp-sync-<timestamp>/` in the hub.
-`~/.agenthub/mcp/origins.json` records which assistant each hub server was ingested from (`from`), where agenthub wrote it (`to`, recorded only after a successful write) and where an identical entry was already there before agenthub (`pre`).
+`origins.json` (in the machine-local state folder, see [Machine-local state](#machine-local-state)) records which assistant each hub server was ingested from (`from`), where agenthub wrote it (`to`, recorded only after a successful write) and where an identical entry was already there before agenthub (`pre`).
 It describes this machine, so the hub's `.gitignore` excludes it.
 A hub from before this file existed has no record, so entries it wrote earlier show as conflicts until you run `agenthub mcp sync --force` once.
 Every conflict message gives the fix: `agenthub mcp sync --force` (the hub's version wins, a backup is kept) or rename one of the two entries.
@@ -218,11 +218,13 @@ Linked relative files must exist (`WARN`), files under `scripts/` that start wit
   A top-level folder with neither a `SKILL.md` nor nested skills is still a `FAIL`.
 - **Declared sources**: what `agenthub.json` declares, `agenthub.lock.json` pins and the machine has installed must agree. A declared custom `check` command is run and must exit 0.
   A custom source without an `install` command whose check fails is a `WARN` ("install it yourself, then re-run"), not a `FAIL`.
+  A vendored skill whose files no longer match the hash in `agenthub.lock.json` is a `WARN` ("modified locally"): it has local edits.
 
 Starting a server or running a `check` executes a command that your hub declares, so these steps run only because you asked for them:
 - `agenthub doctor` runs them. `--no-functional` skips them (the file checks above still run).
 - `agenthub setup` and `agenthub pull` list every MCP server they will start under "Will start to verify" (the full command line, or the full url including its query, the header names, and every environment variable that will be substituted), after the install plan, and ask once for both lists. They run only after you approve or pass `--yes`. Without a terminal and without `--yes` they start nothing and say so. Declining the plan on `setup` leaves the pending items as a note, not a failure.
 - Nothing that plans or scans (`install` plan, `adopt`) runs them.
+- A command you approved before, with the same exact text, is marked `(approved before)` and does not need a new answer (see [Remembered approvals](#remembered-approvals)). `agenthub doctor` itself always runs the checks.
 
 ```bash
 agenthub doctor                    # everything, including the MCP probes
@@ -273,7 +275,7 @@ It may point inside the hub, non-hidden folders of your home, `~/.local/share/<t
 
 #### Keeping work-only items out of the hub: `agenthub ignore`
 
-`~/.agenthub/local.json` is a machine-local ignore list (the hub `.gitignore` excludes it): `{ "ignore": { "mcp": ["entain-gitlab"], "skills": [] } }`, names only, exact match.
+`local.json` in the machine-local state folder is a machine-local ignore list: `{ "ignore": { "mcp": ["entain-gitlab"], "skills": [] } }`, names only, exact match.
 
 ```bash
 agenthub ignore mcp entain-gitlab atlassian   # add names and clean the hub
@@ -307,7 +309,45 @@ agenthub add <target>
 # Install rules only, or select specific skills
 agenthub add <target> --rules-only
 agenthub add <target> --skill web-search,git-helper
+
+# Show the skills a target offers and exit, installing nothing
+agenthub add <target> --list
+
+# A branch, tag or commit of a remote target
+agenthub add owner/repo --ref v1.2 --skill web-search
 ```
+
+Targets: a local folder, or a git source in any of these forms.
+
+| Target | Meaning |
+|---|---|
+| `owner/repo` | A GitHub repository |
+| `owner/repo@skill` | Only that skill (the skills.sh shorthand); an unknown name is an error that lists the skills found |
+| `https://github.com/o/r/tree/<ref>/<path>` | A folder in a repository, at a ref |
+| `https://gitlab.com/g/sub/r` and `.../-/tree/<ref>/<path>` | GitLab, any depth of subgroups |
+| `https://dev.azure.com/org/project/_git/repo?path=/sub&version=GBmain` | Azure Repos (`GB` branch, `GT` tag, `GC` commit) |
+| `https://...`, `ssh://...`, `git://...`, `git@host:path` | Any git URL |
+
+A branch, tag or commit is picked with `--ref <ref>`, or by the ref in a tree URL (a different `--ref` is an error).
+An `add` target has no `#` form: `#` is rejected, with a hint to use `--ref`.
+In `agenthub.json` declarations `#` starts a subpath (`github:owner/repo#subpath`) and the ref is the separate `ref` field.
+In a tree URL the ref is the first path segment, so a branch with a slash is ambiguous there: use the repo URL with `--ref` (a failed clone or a missing subpath says so).
+A URL target must not contain whitespace or control characters.
+`file:` URLs are not accepted, and neither are local paths in a `git:` source: a hub that came from elsewhere must not point git at your disk.
+`agenthub.json` rejects them with an error, and `agenthub add <local-dir>` copies the folder and records `local`, as before.
+What is recorded is always the plain form: `github:owner/repo#subpath` or `git:<url>#subpath` plus a `ref`, without credentials and without any query string.
+Direct downloads of an archive or a single `SKILL.md` URL are not supported.
+
+Skills are found like this.
+A `SKILL.md` at the root is the one skill and shadows everything below it; it is named after its `name:` or, without one, after the repository.
+A `SKILL.md` that is a symlink does not count.
+Otherwise `skills/`, `skills/.curated/`, `skills/.experimental/`, `.agents/skills/` and `.claude/skills/` are searched up to three levels deep (flat, or one or two category folders).
+A folder with a `SKILL.md` is a skill and is not searched further, so a shallower `SKILL.md` shadows deeper ones.
+When two skills have the same name, the first one found wins, and `add` and `--list` warn about the duplicate (naming both paths) and about every folder skipped for lack of a `SKILL.md`.
+The `skills` arrays of `.claude-plugin/marketplace.json` and `.claude-plugin/plugin.json` are read too.
+Their paths must start with `./` and stay inside the repository (no `..`, no absolute paths, no symlinks leaving it), and anything else is ignored.
+A URL that points into a repository (a tree URL, or Azure `path=`) is searched from that folder as well.
+`--skill a,b` selects skills by name.
 
 ### 5. Environment Profiles
 
@@ -474,6 +514,7 @@ Declare sources in `~/.agenthub/agenthub.json` under the `skills` and `mcp` keys
 | `local` | Real folder in `skills/<name>/` (tracked) | Folder in `mcp/servers/<name>/` (tracked), optional `build` run in that folder |
 | `github:owner/repo[#subpath]` | Cloned to `vendor/skills/<name>/` at the locked commit, linked into `skills/` | Cloned to `vendor/mcp/<name>/`, optional `build` |
 | `git:<url>[#subpath]` | Same as `github:` for any git URL | Same as `github:` |
+| a git URL | A GitHub, GitLab or Azure Repos URL (also tree URLs), or any https, ssh or scp-style URL, is accepted and recorded as `github:` or `git:` with its ref and subpath, without credentials or query | Same |
 | `npm:pkg@range[#subpath]` | `npm pack` extracted into `vendor/skills/<name>/` | Runs through `npx -y pkg@<locked version>` |
 | `pypi:pkg@range` | Not supported | Runs through `uvx pkg==<locked version>` |
 | `{ "check", "install"?, "path"? }` | `path` is the skill folder after install (see below) | Nothing to link |
@@ -499,6 +540,38 @@ When `mcp sync` ingests a server from a client config, absolute paths under the 
 Install uses the lock when present and writes it when an item has no pin yet.
 Commit it.
 
+Vendored skills (`github:`, `git:`, `npm:`) and local MCP servers with a `build` also record a `hash`.
+It is a SHA-256 over the folder's files: sorted relative paths with forward slashes, and the contents, as raw bytes.
+File modes and mtimes are ignored, path names are normalised to NFC, and `.git` and `node_modules` are left out (only as directories).
+A symlink is hashed as its path and link target, never by what it points at, and `add` does not copy symlinks into the vendored folder.
+For a local build the sources count: inside a git repository that is what `git ls-files -co --exclude-standard` lists (tracked files plus untracked files git does not ignore), so put the build output of a server in its own `.gitignore`.
+Outside a repository `dist`, `build`, `out`, `target`, `.venv`, `__pycache__` and `.next` are left out instead.
+The `agents/openai.yaml` that `agenthub` projects for Codex is not counted, so linking a skill is not a local edit.
+Only a file that `agenthub` generated is left out (it starts with a `# generated by agenthub` line), and one that a skill ships is hashed and never overwritten.
+Bytes are hashed as they are, so a checkout that converts line endings (CRLF) hashes differently from an LF one.
+Set `* text=auto eol=lf` or `-text` for the hub if you use both.
+The lockfile is deterministic: keys are sorted, nothing has a timestamp, and the format is fixed, so two machines write byte-identical files.
+
+`install` checks a fetched skill against its locked hash before it replaces anything.
+A mismatch fails the item with "content differs from lock" and changes nothing on disk.
+A lock entry that has no hash yet (an older lockfile) gets one: when it is fetched, or from the folder that is already installed.
+`agenthub update` takes a new pin and drops the old hash, and the next fetch records the new one.
+`agenthub doctor` warns "modified locally" for a vendored skill whose files differ from the lock.
+To restore it, delete its folder under `vendor/` and run `agenthub install`.
+
+`agenthub check` reports what `update` would change, without installing anything.
+It resolves the latest pin of every declared source (`git ls-remote`, `npm view`, PyPI), prints each outdated or modified-locally item, and exits 1 if there is any, or if a source cannot be resolved.
+It exits 0 when everything is current.
+Sources you ignore with `agenthub ignore` are skipped, and no command that the hub declares is run.
+
+`agenthub install`, `pull` and `setup` take `--frozen-lockfile`: they fail instead of changing `agenthub.lock.json`.
+A new pin, a hash that would be recorded, an entry that would be pruned, or a changed source all count as a change, and nothing is installed.
+A stale lock entry (for example a declaration whose subpath changed since the lock was written) therefore fails frozen mode until you run `agenthub install --no-frozen-lockfile` and commit the lock.
+Spelling differences that mean the same source (spacing, a trailing slash) are not changes.
+A fetch that does not match its locked hash still fails.
+It is on by default when the environment variable `CI` is set (and not `0` or `false`), and `--no-frozen-lockfile` turns it off.
+`update`, `adopt` and `doctor --fix` are never frozen.
+
 ```bash
 agenthub install            # plan, confirm once, install everything declared, link skills, sync MCP
 agenthub install --yes      # no prompt
@@ -518,9 +591,36 @@ Custom `install`, `check` and `build` strings run through your shell, so `agenth
 Git, npm and uv commands never go through a shell, and lockfile commits and versions are validated before use.
 A local MCP `build` reruns when the build string or the folder's contents change (`node_modules`, `.git` and common build output folders are ignored).
 
+#### Remembered approvals
+
+Your answer is remembered per command, on this machine only, in `approvals.json` in the [machine-local state folder](#machine-local-state), never in the hub repository.
+One entry is kept per approved command: the kind and name of the item, what the command is for (`check`, `install`, `build`, `fetch` or `probe`), and the SHA-256 of its exact text.
+That covers custom `check`, `install` and `build` commands, the fetch of a pinned git or npm source, and each MCP probe line as it is shown (including the url and the list of substituted variables).
+What an approval is bound to goes beyond the text on screen.
+A local `build` is bound to the hash of its sources, a git `build` to the commit, and a probe to the whole expanded config (command, args, env values, cwd, url and header values; only the key names are shown).
+So changed sources under the same build string, or a changed env value under the same keys, ask again.
+The content of a script that an approved command points to (for example `node server.js`) is not covered: approve the command, and trust that file separately.
+A stored approval whose hash does not match its own command is dropped when the file is read.
+The plan still lists everything, and marks a command you approved before with `(approved before)`.
+You are asked y/N only when at least one command is new or changed.
+When all of them were approved before, `agenthub` prints one line saying so and goes on without asking, even without a terminal.
+`--yes` approves and records the commands, and answering no records nothing.
+A command whose text changes, for example because a `pull` edited a custom `install`, or because a pin moved, is new again and asks again.
+`agenthub approvals` lists what is approved, and `agenthub approvals --reset` forgets all of it.
+
+#### Machine-local state
+
+Approvals, the ignore list (`local.json`) and the MCP origins (`origins.json`) are not part of the hub, and they are kept outside its work tree, because whoever controls the hub repository controls every file in it, `.gitignore` or not.
+They live in `$XDG_STATE_HOME/agenthub/<id>/` (default `~/.local/state/agenthub/<id>/`), or `%LOCALAPPDATA%\agenthub\<id>\` on Windows.
+`<id>` is the first 16 hex characters of the SHA-256 of the hub's real path.
+With `--home` or `AGENTHUB_HOME` the folder is under that home instead.
+A file at the old place inside the hub is moved there once, if the new one does not exist.
+A file that git tracks came from the repository, so it is never imported: `agenthub` warns, ignores its content, and `agenthub push` untracks it (the file stays on disk).
+The `.gitignore` entries stay, for hubs that still have the old files.
+
 **Git.**
 The committed `.gitignore` is the same on every machine, so it only holds entries that do not depend on what exists on disk.
-Static entries: `vendor/`, `export/` (generated output), `local.json`, and the assistant-managed collections `skills/synced/`, `skills/codex-primary-runtime/` and `skills/.*/` (dot-directories such as `.system/`).
+Static entries: `vendor/`, `export/` (generated output), `local.json`, `approvals.json`, `mcp/origins.json` (kept for old hubs; these files now live outside the hub), and the assistant-managed collections `skills/synced/`, `skills/codex-primary-runtime/` and `skills/.*/` (dot-directories such as `.system/`).
 They keep working where they are through the link, but they are never committed, and a new machine gets them from the assistant itself.
 The managed block lists, by declared name, every skill symlink agenthub creates from `agenthub.json` (vendored, or a custom `path`).
 A block from an older version that still lists machine-specific entries is rewritten once by the next `install`, `setup` or `pull`.
@@ -529,7 +629,8 @@ Ignore rules do not affect files git already tracks, so `push` also runs `git rm
 Self-built skills are committed as usual.
 The share scan, the registry payload and `info` do not read `vendor/`, and they report the declared sources instead.
 
-`agenthub add <owner/repo>` records each added skill as `github:owner/repo#skills/<name>` with its commit and vendors it instead of copying.
+`agenthub add <owner/repo>` records each added skill as `github:owner/repo#<path>` (the folder where the skill was found, for example `skills/<name>`) with its commit and vendors it instead of copying.
+When the target names a ref, the declaration is `{ "source": "github:owner/repo#<path>", "ref": "<ref>" }`.
 Credentials in a URL (`https://user:token@host/...`) are not recorded, and `add` warns when it drops them.
 `agenthub add <local-dir>` copies the skills and declares them `local`.
 Skills that are not declared at all keep working and are committed as before.
@@ -615,7 +716,7 @@ npm uninstall -g @habom2310/agenthub
 | `agenthub adopt [--yes] [--dry-run]` | Bring existing skills and MCP servers that the hub does not declare under the hub |
 | `agenthub search [query]` | Search the AgentHub registry for packages, addons, and profiles |
 | `agenthub info <target>` | Inspect package metadata, security analysis, scripts, and token footprint |
-| `agenthub add <target>` | Install an agent package, profile, or addon into the hub |
+| `agenthub add <target> [--skill <names>] [--ref <ref>] [--list] [--rules-only] [--yes]` | Install an agent package, profile, or addon into the hub; `--list` shows the skills found and installs nothing |
 | `agenthub profile [list\|create\|use]` | List, create, or switch between isolated configuration profiles |
 | `agenthub share [--publish]` | Audit, push, and publish hub configurations to Git remote or registry (needs `login`) |
 | `agenthub login [--force]` | Log in to the registry with your GitHub account (device flow) |
@@ -632,8 +733,10 @@ npm uninstall -g @habom2310/agenthub
 | `agenthub export <target>` | Export concatenated rules for web assistants (`chatgpt`, `claude-web`, `cursor`) |
 | `agenthub git <status\|init>` | Manage hub Git repository initialization and remote synchronization |
 | `agenthub push [-m <msg>]` | Stage, commit, and push hub configurations to Git remote |
-| `agenthub pull [--yes] [--no-reproject]` | Pull updates from Git remote, reproject rules, and install declared skills and MCP servers |
-| `agenthub install [--yes]` | Install the skills and MCP servers declared in `agenthub.json`, pinned by `agenthub.lock.json` |
+| `agenthub pull [--yes] [--frozen-lockfile] [--no-reproject]` | Pull updates from Git remote, reproject rules, and install declared skills and MCP servers |
+| `agenthub install [--yes] [--frozen-lockfile]` | Install the skills and MCP servers declared in `agenthub.json`, pinned by `agenthub.lock.json`; `--frozen-lockfile` (default when `CI` is set) fails instead of changing the lock |
+| `agenthub check` | Report declared sources that are outdated or modified locally, without installing (exit 1 if any) |
+| `agenthub approvals [--reset]` | List the commands approved to run on this machine, or forget them |
 | `agenthub update [names...] [--yes]` | Re-resolve lockfile pins (all or the named items), then install |
 | `agenthub uninstall [--purge] [-y]` | Roll back assistant rules and junctions to original state, and optionally remove hub |
 

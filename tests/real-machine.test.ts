@@ -1,3 +1,4 @@
+import { stateFile } from '../src/core/state.js';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -176,7 +177,7 @@ describe.skipIf(process.platform === 'win32')('findings from a real machine', ()
 
     const servers = JSON.parse(fs.readFileSync(path.join(hub, 'mcp', 'servers.json'), 'utf-8')).mcpServers;
     expect(servers.codegraph.command).toBe('${HOME}/.claude/hooks/codegraph-mcp.sh');
-    const origins = JSON.parse(fs.readFileSync(path.join(hub, 'mcp', 'origins.json'), 'utf-8'));
+    const origins = JSON.parse(fs.readFileSync(stateFile(hub, 'origins.json', 'mcp/origins.json'), 'utf-8'));
     expect(origins.codegraph.from).toEqual(['claude']);
     // the starter source declaration (npm install -g ...) is gone, so nothing was installed
     expect(JSON.parse(fs.readFileSync(path.join(hub, 'agenthub.json'), 'utf-8')).mcp).toBeUndefined();
@@ -350,14 +351,14 @@ describe.skipIf(process.platform === 'win32')('findings from a real machine', ()
       await runCli(['-H', home, 'setup', '--scaffold-only']);
       await runCli(['-H', home, 'mcp', 'sync']);
       expect(readJson(path.join(hub, 'mcp', 'servers.json')).mcpServers.work).toBeDefined();
-      expect(readJson(path.join(hub, 'mcp', 'origins.json')).work).toBeDefined();
+      expect(readJson(stateFile(hub, 'origins.json', 'mcp/origins.json')).work).toBeDefined();
       const manifest = readJson(path.join(hub, 'agenthub.json'));
       manifest.mcp = { ...manifest.mcp, work: { check: 'true' } };
       write(path.join(hub, 'agenthub.json'), JSON.stringify(manifest));
 
       await runCli(['-H', home, 'ignore', 'mcp', 'work']);
       expect(readJson(path.join(hub, 'mcp', 'servers.json')).mcpServers.work).toBeUndefined();
-      expect(readJson(path.join(hub, 'mcp', 'origins.json')).work).toBeUndefined();
+      expect(readJson(stateFile(hub, 'origins.json', 'mcp/origins.json')).work).toBeUndefined();
       expect(readJson(path.join(hub, 'agenthub.json')).mcp.work).toBeUndefined();
       expect(readJson(path.join(home, '.claude.json')).mcpServers.work).toEqual({ type: 'stdio', command: 'work-mcp', args: [] });
 
@@ -417,7 +418,7 @@ describe('review follow-ups', () => {
     write(path.join(hub, 'skills', 'work-only', 'SKILL.md'), skillMd('work-only'));
     write(path.join(tmp, 'outside', 'SKILL.md'), skillMd('ext'));
     createJunction(path.join(tmp, 'outside'), path.join(hub, 'skills', 'ext'));
-    write(path.join(hub, 'local.json'), JSON.stringify({ ignore: { mcp: [], skills: ['work-only'] } }));
+    write(stateFile(hub, 'local.json'), JSON.stringify({ ignore: { mcp: [], skills: ['work-only'] } }));
     expect(gitInitHub(hub).ok).toBe(true);
     git(hub, 'add', '-A', '-f');
     git(hub, 'commit', '-q', '-m', 'before');
@@ -479,7 +480,7 @@ describe('review follow-ups', () => {
     write(path.join(hub, 'skills', 'work-only', 'SKILL.md'), skillMd('w'));
     write(path.join(hub, 'skills', 'synced', 'u', 's', 'SKILL.md'), skillMd('s'));
     write(path.join(hub, 'skills', '.system', 'x', 'SKILL.md'), skillMd('x'));
-    write(path.join(hub, 'local.json'), JSON.stringify({ ignore: { mcp: [], skills: ['work-only'] } }));
+    write(stateFile(hub, 'local.json'), JSON.stringify({ ignore: { mcp: [], skills: ['work-only'] } }));
     const skills = buildPackagePayload(hub).skills as Array<{ name: string }>;
     expect(skills.map((s) => s.name)).toEqual(['mine']);
   });
@@ -497,7 +498,7 @@ describe('review follow-ups', () => {
     process.exitCode = undefined;
     await runCli(['-H', home, 'ignore', 'skill', '_ok-1.x']);
     expect(process.exitCode).toBeUndefined();
-    expect(readJson(path.join(home, '.agenthub', 'local.json')).ignore.skills).toEqual(['_ok-1.x']);
+    expect(readJson(stateFile(path.join(home, '.agenthub'), 'local.json')).ignore.skills).toEqual(['_ok-1.x']);
 
     const evil = path.join(home, '.local', 'pipx', 'venvs', '.hidden', 'bin', 'tool');
     write(evil, '#!/bin/sh\n');

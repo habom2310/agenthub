@@ -1,3 +1,4 @@
+import { byCodeUnit } from '../utils/sort.js';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -5,6 +6,7 @@ import { safeWriteFile } from '../utils/fs.js';
 import { homeEnv } from './detector.js';
 import { ignoredNames } from './local.js';
 import { loadManifest, type AgentPackageManifest, type SourceSpec } from './manifest.js';
+import { isRemoteGitUrl, isUrlTarget, parseGitUrl } from './source-url.js';
 
 export type SourceKind = 'skills' | 'mcp';
 
@@ -27,6 +29,8 @@ export interface LockEntry {
   source: string;
   commit?: string;
   version?: string;
+  /** SHA-256 of the vendored skill folder, or of the sources of a local MCP build */
+  hash?: string;
 }
 
 export interface LockFile {
@@ -120,9 +124,10 @@ const PYPI_NAME_RE = /^[A-Za-z0-9][\w.-]*$/;
 const NPM_RANGE_RE = /^[\w.^~<>=*+-]+$/;
 const PYPI_RANGE_RE = /^[\w.<>=!,*+-]+$/;
 export const COMMIT_RE = /^[0-9a-f]{40}$/;
-export const VERSION_RE = /^\d[\w.+!-]*$/;
+export const HASH_RE = /^[0-9a-f]{64}$/;
+export const VERSION_RE =/^\d[\w.+!-]*$/;
 const SOURCE_FORMS =
-  'local, github:owner/repo[#subpath], git:<url>[#subpath], npm:pkg@range[#subpath], pypi:pkg@range, or {check[, install]}';
+  'local, github:owner/repo[#subpath], git:<url>[#subpath], a git or GitHub/GitLab/Azure Repos URL, npm:pkg@range[#subpath], pypi:pkg@range, or {check[, install]}';
 
 function validSubpath(sub: string): boolean {
   return sub !== '' && !sub.startsWith('/') && !sub.split(/[\\/]/).includes('..');
@@ -150,7 +155,7 @@ export function parseSourceSpec(kind: SourceKind, name: string, raw: unknown): D
   }
   const spec = raw as SourceSpec;
   const obj = typeof spec === 'object' ? spec : {};
-  const str = sourceString(spec);
+  let str = sourceString(spec);
 
   for (const [key, val] of Object.entries(obj)) {
     if (val !== undefined && typeof val !== 'string') {
@@ -174,15 +179,32 @@ export function parseSourceSpec(kind: SourceKind, name: string, raw: unknown): D
     throw new Error(`${label}: "build" is only supported for MCP servers`);
   }
 
+  // A git URL (GitHub/GitLab/Azure Repos tree URLs included) is recorded as github:/git:
+  let ref = obj.ref;
+  if (isUrlTarget(str)) {
+    const { base, subpath } = splitSubpath(str);
+    let url: ReturnType<typeof parseGitUrl>;
+    try {
+      url = parseGitUrl(base);
+    } catch (err) {
+      throw new Error(`${label}: ${(err as Error).message}`);
+    }
+    if (url.subpath !== undefined && subpath !== undefined) throw new Error(`${label}: the URL already has a path, remove "#${subpath}"`);
+    if (url.ref !== undefined && ref !== undefined && url.ref !== ref) throw new Error(`${label}: "ref" conflicts with the ref in the URL`);
+    ref ??= url.ref;
+    const sub = url.subpath ?? subpath;
+    str = url.source + (sub !== undefined ? `#${sub}` : '');
+  }
+
   const colon = str.indexOf(':');
   const scheme = str === 'local' ? 'local' : colon < 0 ? '' : str.slice(0, colon);
   const rest = colon < 0 ? '' : str.slice(colon + 1);
-  const refSuffix = obj.ref ? ` ref=${obj.ref}` : '';
+  const refSuffix = ref ? ` ref=${ref}` : '';
 
-  if (obj.ref !== undefined && (!/^[\w./-]+$/.test(obj.ref) || obj.ref.startsWith('-'))) {
-    throw new Error(`${label}: invalid ref "${obj.ref}"`);
+  if (ref !== undefined && (!/^[\w./-]+$/.test(ref) || ref.startsWith('-'))) {
+    throw new Error(`${label}: invalid ref "${ref}"`);
   }
-  if (obj.ref !== undefined && scheme !== 'github' && scheme !== 'git') {
+  if (ref !== undefined && scheme !== 'github' && scheme !== 'git') {
     throw new Error(`${label}: "ref" is only supported for github: and git: sources`);
   }
   if (obj.build !== undefined && !['local', 'github', 'git'].includes(scheme)) {
@@ -202,18 +224,22 @@ export function parseSourceSpec(kind: SourceKind, name: string, raw: unknown): D
         kind,
         name,
         spec: str + refSuffix,
-        parsed: { type: 'github', url: `https://github.com/${base}.git`, ref: obj.ref, subpath, build: obj.build },
+        parsed: { type: 'github', url: `https://github.com/${base}.git`, ref, subpath, build: obj.build },
       };
     }
     case 'git': {
       const { base, subpath } = splitSubpath(rest);
       if (!base || base.startsWith('-')) throw new Error(`${label}: expected git:<url>[#subpath], got "${str}"`);
+      // a hub from elsewhere must not point git at local paths (file: URLs, absolute or relative paths)
+      if (!isRemoteGitUrl(base)) {
+        throw new Error(`${label}: "${str}" is not a remote git URL (https://, ssh://, git:// or user@host:path); local paths and file: URLs are not accepted in agenthub.json`);
+      }
       if (subpath !== undefined && !validSubpath(subpath)) throw new Error(`${label}: invalid subpath "${subpath}"`);
       return {
         kind,
         name,
         spec: str + refSuffix,
-        parsed: { type: 'git', url: base, ref: obj.ref, subpath, build: obj.build },
+        parsed: { type: 'git', url: base, ref, subpath, build: obj.build },
       };
     }
     case 'npm': {
@@ -293,6 +319,7 @@ function validEntry(e: unknown): string | null {
   if (!entry || typeof entry !== 'object' || typeof entry.source !== 'string') return 'malformed entry';
   if (entry.commit !== undefined && !COMMIT_RE.test(String(entry.commit))) return `invalid commit "${entry.commit}"`;
   if (entry.version !== undefined && !VERSION_RE.test(String(entry.version))) return `invalid version "${entry.version}"`;
+  if (entry.hash !== undefined && !HASH_RE.test(String(entry.hash))) return `invalid hash "${entry.hash}"`;
   return null;
 }
 
@@ -322,12 +349,25 @@ export function loadLock(hub: string): LockFile {
 }
 
 /** Source string without its "#subpath", so a subpath change keeps the pin. */
-export function sameSource(a: string, b: string): boolean {
-  return a.replace(/#\S*/, '') === b.replace(/#\S*/, '');
+/** Same source text, ignoring spacing and a trailing slash: equivalent, so the locked content still applies. */
+export function sameSpec(a: string, b: string): boolean {
+  const norm = (s: string): string => s.trim().replace(/\s+/g, ' ').replace(/\/+(?=#| |$)/g, '');
+  return norm(a) === norm(b);
 }
 
+export function sameSource(a: string, b: string): boolean {
+  const norm = (s: string): string => s.replace(/#\S*/, '').trim().replace(/\s+/g, ' ');
+  return norm(a) === norm(b);
+}
+
+// plain code-unit order: the same bytes on every machine, whatever its locale
+
 function sortedRecord(rec: Record<string, LockEntry>): Record<string, LockEntry> {
-  return Object.fromEntries(Object.entries(rec).sort(([a], [b]) => a.localeCompare(b)));
+  return Object.fromEntries(
+    Object.entries(rec)
+      .sort(([a], [b]) => byCodeUnit(a, b))
+      .map(([name, entry]) => [name, Object.fromEntries(Object.entries(entry).filter(([, v]) => v !== undefined).sort(([a], [b]) => byCodeUnit(a, b)))])
+  ) as Record<string, LockEntry>;
 }
 
 export function serializeLock(lock: LockFile): string {
@@ -349,6 +389,11 @@ export function saveLock(hub: string, lock: LockFile): boolean {
 }
 
 // ---- Pin resolution ----
+
+/** True for a local MCP server with a build step: its lock entry records a hash of the sources. */
+export function isLocalBuild(decl: DeclaredSource): boolean {
+  return decl.parsed.type === 'local' && decl.kind === 'mcp' && Boolean(decl.parsed.build);
+}
 
 /** True for sources that need a lockfile pin. */
 export function isPinned(decl: DeclaredSource): boolean {

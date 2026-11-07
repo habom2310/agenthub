@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { safeWriteFile } from '../utils/fs.js';
+import { stateFile } from './state.js';
 
 export type IgnoreKind = 'mcp' | 'skills';
 
 /** Machine-local ignore list in hub/local.json (gitignored): names only, exact match. */
 export function localPath(hub: string): string {
-  return path.join(hub, 'local.json');
+  return stateFile(hub, 'local.json');
 }
 
 export function readIgnored(hub: string): Record<IgnoreKind, string[]> {
