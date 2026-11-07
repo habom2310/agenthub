@@ -1,13 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { findExecutable, getUtcTimestamp, isJunctionOrSymlink, isWithin, safeWriteFile, ensureDir } from '../utils/fs.js';
-import { getHomeDir, getHubDir, windsurfDirFor } from './detector.js';
+import { getHomeDir, getHubDir, windsurfDirFor, SKILL_PLATFORMS } from './detector.js';
 import { isLinkTo } from './linker.js';
 import { setDeclaredSource, type SourceSpec } from './manifest.js';
 import { MCP_PLATFORMS, MCP_PLATFORM_IDS, isDisabled } from './mcp-platforms.js';
 import { contractPaths, expandServerPaths, getMcpStatus, normalizeServerForHub, readJsonSafely, type McpServerConfig } from './mcp-sync.js';
 import { ignoredNames } from './local.js';
-import { assistantSkillRoots } from './skill-check.js';
+import { readSkillLock, skillContentHash, type LockedSkill } from './skill-lock.js';
 import { loadDeclaredSources, parseSourceSpec, type SourceKind } from './sources.js';
 
 /** One way to bring an item under the hub. Nothing in it has been executed. */
@@ -276,8 +276,8 @@ function scanSkillDirs(home: string, hub: string): SkillSeen[] {
   const out: SkillSeen[] = [];
   const hubSkills = path.join(hub, 'skills');
   const dirs: Array<{ dir: string; label: string }> = [{ dir: hubSkills, label: 'hub' }];
-  for (const a of assistantSkillRoots(home)) {
-    if (a.linked) dirs.push({ dir: a.linked, label: a.label });
+  for (const p of SKILL_PLATFORMS) {
+    if (p.detected(home)) dirs.push({ dir: p.skillsDir(home), label: p.label });
   }
   dirs.push({ dir: path.join(home, '.agents', 'skills'), label: 'Agents' });
   const windsurf = windsurfDirFor(home);
@@ -305,7 +305,7 @@ function scanSkillDirs(home: string, hub: string): SkillSeen[] {
   return out;
 }
 
-function skillProposal(seen: SkillSeen[], home: string, hub: string): Pick<AdoptItem, 'proposal' | 'selfBuilt' | 'report'> {
+function skillProposal(seen: SkillSeen[], home: string, hub: string, lock: Map<string, LockedSkill>): Pick<AdoptItem, 'proposal' | 'selfBuilt' | 'report'> {
   const hubSkills = path.join(hub, 'skills');
   const first = seen.find((s) => s.label !== 'hub') ?? seen[0];
   const real = realOf(first.at) as string;
@@ -334,6 +334,34 @@ function skillProposal(seen: SkillSeen[], home: string, hub: string): Pick<Adopt
     const source = mapped.base + (sub ? `#${sub}` : '');
     const cs = checkoutSpec(root, source, remote.name, home);
     return { proposal: { label: source, spec: cs.spec, confident: cs.confident, note: cs.note } };
+  }
+
+  // installed with `npx skills`: its lockfile names the repository (read as data, never run)
+  const locked = lock.get(first.name);
+  if (locked) {
+    const source = locked.base + (locked.subpath ? `#${locked.subpath}` : '');
+    const known = locked.subpath !== undefined;
+    // confident only when what is here is the copy `npx skills` installed (the original folder, or the skills.old it left)
+    const baseline = [path.join(home, '.agents', 'skills.old', first.name), path.join(home, '.agents', 'skills', first.name)].find(
+      (d) => fs.existsSync(path.join(d, 'SKILL.md')) && !isWithin(hubSkills, realOf(d) ?? d)
+    );
+    const have = skillContentHash(real);
+    const same = baseline !== undefined && have !== null && have === skillContentHash(baseline);
+    const lockNote = `a skill named ${first.name} exists in the npx skills lock but ${
+      baseline === undefined ? 'no copy from ~/.agents/skills is left to compare it with' : `its content differs from ${tilde(baseline, home)}`
+    }`;
+    return {
+      proposal: {
+        label: source,
+        spec: locked.ref ? { source, ref: locked.ref } : source,
+        confident: known && same,
+        note:
+          `installed with npx skills (${tilde(path.join(home, '.agents', '.skill-lock.json'), home)})` +
+          (known ? '' : '; the lock names no folder in the repository, so the whole repository is declared') +
+          (same ? '' : `; ${lockNote}`) +
+          '; it may still be managed by `npx skills update`, agenthub vendors its own pinned copy',
+      },
+    };
   }
 
   // a link into something that is not a checkout and not the hub: installed by a tool
@@ -584,13 +612,14 @@ export function scanAdoptable(homeDir?: string, hubDir?: string): AdoptItem[] {
     if (isDeclared('skills', s.name)) continue;
     byName.set(s.name, [...(byName.get(s.name) ?? []), s]);
   }
+  const lock = readSkillLock(home, sourceFromRemote);
   for (const [name, seen] of byName) {
     const found = seen.map((s) => {
       const real = realOf(s.at);
       const link = isJunctionOrSymlink(s.at) && real ? ` -> ${tilde(real, home)}` : '';
       return `${s.label}: ${tilde(s.at, home)}${link}`;
     });
-    items.push({ kind: 'skills', name, found, ...skillProposal(seen, home, hub) });
+    items.push({ kind: 'skills', name, found, ...skillProposal(seen, home, hub, lock) });
   }
 
   const status = getMcpStatus(home, hub);

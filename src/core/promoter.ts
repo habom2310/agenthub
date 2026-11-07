@@ -17,6 +17,7 @@ import {
   projectCodexRules,
   projectCursorRules,
   projectGeminiRules,
+  projectPiRules,
   projectWindsurfRules,
 } from './projector.js';
 
@@ -256,6 +257,7 @@ export function promoteChunk(chunk: MarkdownChunk, options?: PromoteOptions): Pr
     projectCodexRules(homeDir, hubDir);
     projectCursorRules(undefined, homeDir, hubDir);
     projectWindsurfRules(undefined, homeDir, hubDir);
+    projectPiRules(homeDir, hubDir);
   }
 
   return {

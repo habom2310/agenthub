@@ -52,6 +52,7 @@ export interface PlatformReport {
     cursor: PlatformInfo;
     windsurf: PlatformInfo;
     copilot: PlatformInfo;
+    pi: PlatformInfo;
     [key: string]: PlatformInfo;
   };
 }
@@ -115,13 +116,24 @@ export function copilotInstalled(home: string): boolean {
   return isDir(path.join(home, '.copilot')) || findExecutable('copilot') !== null;
 }
 
+/**
+ * Pi coding agent: only a ~/.pi/agent folder counts. A `pi` binary on PATH is too generic a
+ * name to write files for, so it is only reported by detect (piBinary).
+ */
+export function piInstalled(home: string): boolean {
+  return isDir(path.join(home, '.pi', 'agent'));
+}
+
+/** ~/.agents/skills: the cross-agent user skills folder (https://skills.sh), read by Codex, Pi, Cursor and others. */
+export const agentsSkillsDir = (home: string): string => path.join(home, '.agents', 'skills');
+
 /** ~/.codeium/windsurf when it exists, otherwise ~/.windsurf. */
 export function windsurfDirFor(homeDir: string): string {
   const codeium = path.join(homeDir, '.codeium', 'windsurf');
   return isDir(codeium) ? codeium : path.join(homeDir, '.windsurf');
 }
 
-export type SkillPlatformId = 'claude' | 'codex' | 'cursor' | 'windsurf' | 'copilot';
+export type SkillPlatformId = 'claude' | 'codex' | 'cursor' | 'windsurf' | 'copilot' | 'pi';
 
 /**
  * The assistants whose skills folder agenthub links, in link order (Cursor after
@@ -134,6 +146,10 @@ export interface SkillPlatform {
   skillsDir(home: string): string;
   /** Other folders the assistant loads user-level skills from (https://cursor.com/docs/skills, GitHub and Devin docs) */
   alsoReads(home: string): string[];
+  /** Loads ~/.agents/skills; its own link is skipped once that folder links to the hub, so no skill is listed twice */
+  readsAgentsDir: boolean;
+  /** False for an assistant that gets the hub only through ~/.agents/skills (its detection creates that link) */
+  linksOwnDir: boolean;
 }
 
 export const SKILL_PLATFORMS: SkillPlatform[] = [
@@ -143,34 +159,54 @@ export const SKILL_PLATFORMS: SkillPlatform[] = [
     detected: (h) => isDir(path.join(h, '.claude')),
     skillsDir: (h) => path.join(h, '.claude', 'skills'),
     alsoReads: () => [],
+    readsAgentsDir: false,
+    linksOwnDir: true,
   },
   {
     id: 'codex',
     label: 'Codex',
     detected: (h) => isDir(path.join(h, '.codex')),
     skillsDir: (h) => path.join(h, '.codex', 'skills'),
-    alsoReads: () => [],
+    // https://developers.openai.com/codex/skills lists $HOME/.agents/skills as the user location
+    alsoReads: (h) => [agentsSkillsDir(h)],
+    readsAgentsDir: true,
+    linksOwnDir: false,
   },
   {
     id: 'cursor',
     label: 'Cursor',
     detected: (h) => isDir(path.join(h, '.cursor')),
     skillsDir: (h) => path.join(h, '.cursor', 'skills'),
-    alsoReads: (h) => [path.join(h, '.agents', 'skills'), path.join(h, '.claude', 'skills'), path.join(h, '.codex', 'skills')],
+    alsoReads: (h) => [agentsSkillsDir(h), path.join(h, '.claude', 'skills'), path.join(h, '.codex', 'skills')],
+    readsAgentsDir: true,
+    linksOwnDir: true,
   },
   {
     id: 'windsurf',
     label: 'Windsurf',
     detected: (h) => isDir(path.join(h, '.codeium', 'windsurf')) || isDir(path.join(h, '.windsurf')),
     skillsDir: (h) => path.join(windsurfDirFor(h), 'skills'),
-    alsoReads: (h) => [path.join(h, '.agents', 'skills')],
+    alsoReads: (h) => [agentsSkillsDir(h)],
+    readsAgentsDir: true,
+    linksOwnDir: true,
   },
   {
     id: 'copilot',
     label: 'Copilot',
     detected: (h) => copilotInstalled(h),
     skillsDir: (h) => path.join(h, '.copilot', 'skills'),
-    alsoReads: (h) => [path.join(h, '.agents', 'skills')],
+    alsoReads: (h) => [agentsSkillsDir(h)],
+    readsAgentsDir: true,
+    linksOwnDir: true,
+  },
+  {
+    id: 'pi',
+    label: 'Pi',
+    detected: (h) => piInstalled(h),
+    skillsDir: (h) => path.join(h, '.pi', 'agent', 'skills'),
+    alsoReads: (h) => [agentsSkillsDir(h)],
+    readsAgentsDir: true,
+    linksOwnDir: false,
   },
 ];
 
@@ -379,6 +415,23 @@ export function detectPlatforms(): PlatformReport {
     skills_linked: isDir(copilotSkills) && isJunctionOrSymlink(copilotSkills),
     config_file: path.join(copilotDir, 'mcp-config.json'),
     config_exists: isFile(path.join(copilotDir, 'mcp-config.json')),
+  };
+
+  // 7. Pi coding agent
+  const piDir = path.join(home, '.pi', 'agent');
+  const piSkills = skillsOf('pi');
+  report.platforms.pi = {
+    name: 'Pi',
+    detected: skillPlatform('pi').detected(home),
+    path: piDir,
+    bin_path: findExecutable('pi') || '',
+    rules_file: path.join(piDir, 'AGENTS.md'),
+    rules_exists: isFile(path.join(piDir, 'AGENTS.md')),
+    skills_dir: piSkills,
+    skills_exists: isDir(piSkills),
+    skills_linked: isDir(piSkills) && isJunctionOrSymlink(piSkills),
+    config_file: path.join(piDir, 'mcp.json'),
+    config_exists: isFile(path.join(piDir, 'mcp.json')),
   };
 
   return report;

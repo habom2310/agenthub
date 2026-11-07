@@ -12,6 +12,7 @@ Installation, usage and command reference for [AgentHub](../README.md).
 | Cursor | `~/.cursor` |
 | Windsurf | `~/.codeium/windsurf` / `~/.windsurf` |
 | GitHub Copilot CLI | `~/.copilot`, or the `copilot` binary on your `PATH` |
+| Pi | `~/.pi/agent` |
 
 ### Where each assistant gets skills and MCP servers
 
@@ -19,16 +20,29 @@ Installation, usage and command reference for [AgentHub](../README.md).
 |---|---|---|
 | Claude Code | `~/.claude/skills` (link to the hub) | `~/.claude.json` (`mcpServers`) |
 | Antigravity / Gemini | `~/.gemini/config/skills.json` entry | `~/.gemini/config/mcp_config.json`, `~/.gemini/settings.json` |
-| Codex | `~/.codex/skills` (link) | `~/.codex/config.toml`, `[mcp_servers.<name>]` tables |
-| Cursor | no link of its own when Claude or Codex are linked, otherwise `~/.cursor/skills` (link) | `~/.cursor/mcp.json` (`mcpServers`) |
-| Windsurf | `~/.codeium/windsurf/skills` (link) | `~/.codeium/windsurf/mcp_config.json` (`mcpServers`, remote servers use `serverUrl`) |
-| Copilot CLI | `~/.copilot/skills` (link) | `~/.copilot/mcp-config.json` (`mcpServers`, entries carry `type` and `tools`) |
+| Codex | `~/.agents/skills` (link) | `~/.codex/config.toml`, `[mcp_servers.<name>]` tables |
+| Cursor | no link of its own when `~/.agents/skills`, Claude or Codex are linked, otherwise `~/.cursor/skills` (link) | `~/.cursor/mcp.json` (`mcpServers`) |
+| Windsurf | `~/.codeium/windsurf/skills` (link), or `~/.agents/skills` when that is linked | `~/.codeium/windsurf/mcp_config.json` (`mcpServers`, remote servers use `serverUrl`) |
+| Copilot CLI | `~/.copilot/skills` (link), or `~/.agents/skills` when that is linked | `~/.copilot/mcp-config.json` (`mcpServers`, entries carry `type` and `tools`) |
+| Pi | `~/.agents/skills` (link) | `~/.pi/agent/mcp.json` (`mcpServers`, stdio or http entries, no `sse`) |
 
 Only detected assistants are touched.
-Cursor loads `~/.claude/skills` and `~/.codex/skills` as well as `~/.cursor/skills` ([Cursor docs](https://cursor.com/docs/skills)).
-Linking all of them would list every skill twice, so agenthub skips the `~/.cursor/skills` link while Claude or Codex already provide the hub skills, and removes an earlier hub link there.
-A real `~/.cursor/skills` folder is left alone.
-Copilot CLI reads personal skills from `~/.copilot/skills` and `~/.agents/skills` only, so it gets its own link.
+`~/.agents/skills` is the cross-agent folder for user skills (it is also where `npx skills` installs them).
+Codex ([Codex docs](https://developers.openai.com/codex/skills)) and Pi load user skills from it, so agenthub links it to the hub when either one is detected, and creates no link of its own for them.
+A `pi` binary on your `PATH` alone is only reported by `agenthub detect`: `pi` is too generic a name, so nothing is linked, projected or written for it until `~/.pi/agent` exists.
+`~/.agents/skills` is always linked before any other skills folder, by `link`, `doctor --fix`, `connect` and `setup` alike.
+A real `~/.agents/skills` folder is copied into the hub first and renamed to `skills.old`, like any other skills folder.
+That moves skills installed with `npx skills` into the hub, so `npx skills update` and `npx skills remove` now write there.
+agenthub says so, and until you run `agenthub adopt` to declare where they came from, the skills named in `~/.agents/.skill-lock.json` stay out of git (listed in the machine-local `.git/info/exclude` section).
+When an assistant folder holds links into `~/.agents/skills` (the `npx skills` layout, `~/.claude/skills/foo` pointing at `~/.agents/skills/foo`), the content is copied into the hub rather than the link, so nothing loops.
+Links to anywhere else, such as a tool-managed folder, stay links.
+Codex's own `~/.codex/skills` (with its `.system` folder) is never touched.
+If an older agenthub linked it to the hub, the link is removed and `skills.old` is restored.
+Cursor, Windsurf and Copilot CLI also load `~/.agents/skills`, and Cursor loads `~/.claude/skills` and `~/.codex/skills` too ([Cursor docs](https://cursor.com/docs/skills)).
+Linking all of them would list every skill twice, so agenthub skips the own link of an assistant while another folder it loads already provides the hub skills, and removes an earlier hub link there.
+A real skills folder of such an assistant is left alone.
+`agenthub doctor` follows the same roots when it checks that each hub skill resolves and that no skill is listed twice.
+Claude Code and Antigravity read neither folder, so they keep their own.
 
 ---
 
@@ -79,7 +93,7 @@ npx @habom2310/agenthub setup
 
 ## What `agenthub setup` Does Automatically
 1. **Scaffolds** the central `~/.agenthub` directory with starter heuristics, templates, and subagents (while creating a timestamped backup of existing rules and config files such as `CLAUDE.md`, `GEMINI.md`, `AGENTS.md` and `settings.json`).
-2. **Auto-wires all detected assistants**: creates directory junctions for shared skills (`~/.claude/skills`, `~/.gemini/config/skills.json`, `.codex/skills`, etc.), compiles and projects unified markdown rules (`GEMINI.md`, `CLAUDE.md`, `AGENTS.md`, Cursor MDC rules), and synchronizes MCP server definitions. An existing skills folder is copied into the hub and renamed to `skills.old`; if `skills.old` already exists, it is kept and the new backup goes to a timestamped `skills.old.<YYYYMMDD_HHMMSSZ>`. `agenthub uninstall` restores `skills.old` (the first backup); timestamped backups stay in place for you to restore or delete by hand.
+2. **Auto-wires all detected assistants**: creates directory junctions for shared skills (`~/.claude/skills`, `~/.gemini/config/skills.json`, `~/.agents/skills` for Codex and Pi, etc.), compiles and projects unified markdown rules (`GEMINI.md`, `CLAUDE.md`, `AGENTS.md`, Cursor MDC rules), and synchronizes MCP server definitions. An existing skills folder is copied into the hub and renamed to `skills.old`; if `skills.old` already exists, it is kept and the new backup goes to a timestamped `skills.old.<YYYYMMDD_HHMMSSZ>`. `agenthub uninstall` restores `skills.old` (the first backup); timestamped backups stay in place for you to restore or delete by hand.
 A new hub declares its starter MCP server `codegraph` with a custom source (`check: codegraph --version`, `install: npm install -g @colbymchenry/codegraph`), so `setup` offers to install it as part of the install plan.
 If an assistant already has its own `codegraph` entry and the hub still has the untouched starter, your entry wins.
 `setup` ingests it into the hub (recorded as ingested from that assistant), replaces the starter, and drops the starter's source declaration from `agenthub.json` when that is untouched too.
@@ -142,6 +156,9 @@ agenthub diff
 agenthub promote common.md
 ```
 
+Pi gets the same `AGENTS.md` as Codex (`~/.pi/agent/AGENTS.md`, with the `AUTOGENERATED BY AGENTHUB` header guard, plus an optional `rules/overrides/pi.md`), only when `~/.pi/agent` exists.
+A hand-written `AGENTS.md` (Pi's or Codex's) without the header guard is copied to `backups/` in the hub before the first overwrite, and the projection says where.
+
 In a subagent template (`~/.agenthub/agents/*.md`), text between `<!-- claude-only -->` and `<!-- /claude-only -->` lines goes only to the Claude Code agent (`~/.claude/agents/`); the Antigravity copy (`~/.gemini/config/agents/`) leaves it out. Both copies drop the marker lines. Put each marker on its own line, unindented, and don't nest blocks; `agenthub project` warns about a malformed block.
 
 Three frontmatter keys apply to the Claude Code agent only (the Antigravity copy ignores them): `claude_model` and `claude_tools` replace the model and tool list that `tier` and `mode` would give, and `permissionMode` is copied as is. Write `claude_tools` as one comma-separated string:
@@ -154,7 +171,7 @@ permissionMode: auto
 
 ### 2. Bidirectional MCP Server Synchronization
 
-Manage Model Context Protocol (MCP) servers centrally in `~/.agenthub/mcp/servers.json` and sync with `~/.claude.json`, `~/.gemini/config/mcp_config.json`, `~/.gemini/settings.json`, `~/.codex/config.toml`, `~/.cursor/mcp.json`, `~/.codeium/windsurf/mcp_config.json` and `~/.copilot/mcp-config.json`:
+Manage Model Context Protocol (MCP) servers centrally in `~/.agenthub/mcp/servers.json` and sync with `~/.claude.json`, `~/.gemini/config/mcp_config.json`, `~/.gemini/settings.json`, `~/.codex/config.toml`, `~/.cursor/mcp.json`, `~/.codeium/windsurf/mcp_config.json`, `~/.copilot/mcp-config.json` and `~/.pi/agent/mcp.json`:
 
 ```bash
 # View MCP server status across platforms
@@ -169,10 +186,12 @@ Each assistant gets its own format:
 - **Cursor** gets `command`/`args`/`env` or `url`/`headers`, without a `type` key.
 - **Windsurf** gets the same, with `serverUrl` for remote servers.
 - **Copilot CLI** gets `type` (`local` or `http`) and `tools` (`["*"]`, or the filter you set) on every entry.
+- **Pi** gets `command`/`args`/`env`/`cwd` or `url`/`headers`, without a `type` key, in `~/.pi/agent/mcp.json`, and keeps its own keys such as `oauth`.
+  Pi rejects `sse` servers and names with anything but letters, digits, `_` and `-`, so sync skips those and `agenthub doctor` warns for each one.
 
 Servers that exist only in an assistant are ingested into the hub with `${HOME}` and `${HUB}` placeholders (disabled Codex servers are not ingested).
 A config file that does not parse is never overwritten: the sync reports `[SKIP]` and `agenthub doctor` flags it.
-An entry that an assistant has under the same name as a hub server, but with a different config that agenthub never wrote or ingested there, is reported as `[CONFLICT]` and left alone, on all six assistants.
+An entry that an assistant has under the same name as a hub server, but with a different config that agenthub never wrote or ingested there, is reported as `[CONFLICT]` and left alone, on all seven assistants.
 `agenthub doctor --fix` reports it and leaves it alone too.
 Only an explicit `agenthub mcp sync --force` overwrites it, after copying each file it changes to `backups/mcp-sync-<timestamp>/` in the hub.
 `~/.agenthub/mcp/origins.json` records which assistant each hub server was ingested from (`from`), where agenthub wrote it (`to`, recorded only after a successful write) and where an identical entry was already there before agenthub (`pre`).
@@ -181,7 +200,7 @@ A hub from before this file existed has no record, so entries it wrote earlier s
 Every conflict message gives the fix: `agenthub mcp sync --force` (the hub's version wins, a backup is kept) or rename one of the two entries.
 `agenthub doctor --fix` never forces.
 `${VAR}` in a server is written the way each assistant documents: Claude takes it as is, Cursor gets `${env:VAR}`, and Gemini expands it only in `env`.
-Codex, Windsurf and Copilot CLI document no `${VAR}` expansion, so the server would receive the text literally, and `agenthub doctor` warns, naming the assistant and the variable.
+Codex, Windsurf, Copilot CLI and Pi document no `${VAR}` expansion, so the server would receive the text literally, and `agenthub doctor` warns, naming the assistant and the variable.
 A server that is disabled on an assistant (`enabled = false`, `disabled: true`) is not reported as untracked.
 Config files keep their mode (a new one gets 0600) and a symlinked config stays a symlink.
 
@@ -240,6 +259,7 @@ It scans every detected assistant's skills folders and MCP configs (and `skills/
 | Found | Proposed source |
 |---|---|
 | Skill (link or folder) inside a git checkout with a remote | `github:owner/repo#subpath`, or `git:<url>#subpath`, credentials removed, pinned to the checkout's commit (`ref`). The commit and the remote's last fetched HEAD are read from `.git` files; git is never run. It is confident only when both are the same commit. Local edits are not checked. |
+| Skill named in the `npx skills` lockfile (`~/.agents/.skill-lock.json`) with a `github`, `gitlab` or `git` source | `github:owner/repo#<folder of skillPath>` (or `git:<url>#<folder>`), with the lock's `ref` when it has one, credentials removed. Confident only when the lock names the folder and the hub copy has the same content as the one `npx skills` installed (`~/.agents/skills.old/<name>`, or `~/.agents/skills/<name>` before the move); otherwise the note says the content differs. The lock is read as untrusted data: a malformed entry is skipped. The skill may still be managed by `npx skills update`; agenthub vendors its own pinned copy |
 | Skill linked into a tool-managed folder such as `~/.local/share/<tool>/skills/...` | `custom` with `check: test -f <path>/SKILL.md` and `path`; add an `install` command, or leave it check-only |
 | Top-level `skills/` folder with nested skills, or a dot-directory (`synced/`, `.system/`) | skipped: an assistant manages it (see [Git](#7b-skills-and-mcp-servers-as-dependencies)) |
 | Plain skill folder, no git | self-built (moved into `skills/` as `local`) or a source you enter |
@@ -593,7 +613,8 @@ agenthub uninstall
 agenthub uninstall --purge -y
 ```
 
-Rollback also unlinks `~/.copilot/skills` and the other skill links (restoring `skills.old`), restores the pre-agenthub `~/.codex/config.toml`, `~/.cursor/mcp.json`, `~/.codeium/windsurf/mcp_config.json` and `~/.copilot/mcp-config.json` from the setup backup, and `~/.cursor/skills.old` when the Cursor link was removed.
+Rollback also unlinks `~/.agents/skills`, `~/.copilot/skills` and the other skill links (restoring `skills.old`), restores the pre-agenthub `~/.codex/config.toml`, `~/.cursor/mcp.json`, `~/.codeium/windsurf/mcp_config.json`, `~/.copilot/mcp-config.json` and `~/.pi/agent/mcp.json` from the setup backup, and `~/.cursor/skills.old` when the Cursor link was removed.
+A `skills.old` is brought back only for Cursor, Codex and `~/.agents/skills`, only into a path that is free, and never over something that exists.
 For a config the backup did not cover, it removes only servers that `origins.json` says agenthub wrote there and that still match what the hub would write.
 A server you had before agenthub, one you changed since, and with `--purge` any server that would exist nowhere else are kept, and listed under "Kept in place".
 
@@ -625,7 +646,7 @@ npm uninstall -g @habom2310/agenthub
 | `agenthub project [--no-imports]` | Compile and project unified rules and subagents to configured platforms |
 | `agenthub diff [-p <platform>]` | Detect drift between hub rules and downstream platforms |
 | `agenthub promote [file]` | Promote downstream rule edits back into central hub |
-| `agenthub mcp <status\|sync [--force]>` | Display or bidirectionally synchronize MCP server configurations (Claude, Gemini, Codex, Cursor, Windsurf, Copilot CLI) |
+| `agenthub mcp <status\|sync [--force]>` | Display or bidirectionally synchronize MCP server configurations (Claude, Gemini, Codex, Cursor, Windsurf, Copilot CLI, Pi) |
 | `agenthub link` | Create directory junctions linking `skills/` across all detected platforms |
 | `agenthub connect <platform>` | Connect an assistant platform by linking skills and projecting rules |
 | `agenthub budget` | Audit rule and skill token usage against boot token budget |

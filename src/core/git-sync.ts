@@ -2,7 +2,9 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureDir, findExecutable, getUtcTimestamp, isJunctionOrSymlink, isWithin, safeWriteFile } from '../utils/fs.js';
-import { getHubDir } from './detector.js';
+import { getHomeDir, getHubDir } from './detector.js';
+import { readSkillLockNames } from './skill-lock.js';
+import { loadDeclaredSources } from './sources.js';
 import { isScaffoldDefault } from './scaffold.js';
 import { projectCodexSkillManifests } from './linker.js';
 import { projectAll } from './projector.js';
@@ -215,7 +217,10 @@ function realish(p: string): string {
  */
 export function ignoreMachineSpecificSkills(hubDir: string): string[] {
   const skillsDir = path.join(hubDir, 'skills');
-  const ignoredSkills = [...ignoredNames(hubDir, 'skills')];
+  // skills the `npx skills` lock names are its copies, not the hub's own: not committed until declared
+  const declared = new Set(loadDeclaredSources(hubDir).sources.filter((d) => d.kind === 'skills').map((d) => d.name));
+  const npxSkills = readSkillLockNames(getHomeDir()).filter((n) => !declared.has(n) && fs.existsSync(path.join(skillsDir, n)));
+  const ignoredSkills = [...new Set([...ignoredNames(hubDir, 'skills'), ...npxSkills])];
   const names = [...listSkillCollections(skillsDir), ...ignoredSkills];
 
   const hub = realish(hubDir);

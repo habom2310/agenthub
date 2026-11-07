@@ -52,6 +52,9 @@ describe.skipIf(process.platform === 'win32')('findings from a real machine', ()
     write(path.join(skills, 'synced', 'org-uuid', 'licensed', 'SKILL.md'), skillMd('licensed'));
     write(path.join(oldHome, '.codex', 'skills', '.system', 'sys-skill', 'SKILL.md'), skillMd('sys-skill'));
     write(path.join(oldHome, '.codex', 'skills', 'codex-primary-runtime', 'rt', 'SKILL.md'), skillMd('rt'));
+    // an older agenthub migrated Codex's collections into the hub; Codex's own folder is no longer touched
+    write(path.join(skills, '.system', 'sys-skill', 'SKILL.md'), skillMd('sys-skill'));
+    write(path.join(skills, 'codex-primary-runtime', 'rt', 'SKILL.md'), skillMd('rt'));
     const tool = path.join(oldHome, '.local', 'share', 'ripwire', 'skills', 'ripwire-find-bug');
     write(path.join(tool, 'SKILL.md'), skillMd('ripwire-find-bug'));
     fs.symlinkSync(tool, path.join(skills, 'ripwire-find-bug'));
@@ -61,7 +64,11 @@ describe.skipIf(process.platform === 'win32')('findings from a real machine', ()
 
     // the collections keep working where they are, through the link
     expect(fs.existsSync(path.join(skills, 'synced', 'org-uuid', 'licensed', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(skills, '.system', 'sys-skill', 'SKILL.md'))).toBe(true);
+    // Codex's own folder keeps its .system, and is not linked (Codex reads ~/.agents/skills)
+    expect(fs.lstatSync(path.join(oldHome, '.codex', 'skills')).isSymbolicLink()).toBe(false);
     expect(fs.existsSync(path.join(oldHome, '.codex', 'skills', '.system', 'sys-skill', 'SKILL.md'))).toBe(true);
+    expect(fs.lstatSync(path.join(oldHome, '.agents', 'skills')).isSymbolicLink()).toBe(true);
 
     // a check-only declaration (what adopt proposes) is valid
     const manifestPath = path.join(oldHub, 'agenthub.json');

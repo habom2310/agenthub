@@ -344,7 +344,16 @@ Section after horizontal rule`;
       expect(res.message).toContain('Rules directory not found');
     });
 
+    it('does not create ~/.codex when Codex is not installed, but still writes the ChatGPT export', () => {
+      safeWriteFile(path.join(hubDir, 'rules', 'common.md'), '# Common');
+      const res = projectCodexRules(homeDir, hubDir);
+      expect(res.success).toBe(true);
+      expect(fs.existsSync(path.join(homeDir, '.codex'))).toBe(false);
+      expect(fs.existsSync(path.join(hubDir, 'export', 'chatgpt_custom_instructions.md'))).toBe(true);
+    });
+
     it('projects AGENTS.md and creates ChatGPT custom instructions export', () => {
+      fs.mkdirSync(path.join(homeDir, '.codex'), { recursive: true }); // Codex installed
       const rulesDir = path.join(hubDir, 'rules');
       safeWriteFile(path.join(rulesDir, 'common.md'), '# Codex Common');
       safeWriteFile(path.join(rulesDir, 'overrides', 'codex.md'), '# Codex Overrides');
@@ -690,6 +699,7 @@ Shared outro.`
 
   describe('projectRules and projectAll', () => {
     it('aggregates messages across all projections', () => {
+      fs.mkdirSync(path.join(homeDir, '.codex'), { recursive: true }); // Codex installed
       const rulesDir = path.join(hubDir, 'rules');
       safeWriteFile(path.join(rulesDir, 'common.md'), '# Common');
       safeWriteFile(path.join(rulesDir, 'code-tools.md'), '# Code Tools');
@@ -700,7 +710,7 @@ Shared outro.`
 
       const rulesRes = projectRules({ homeDir, hubDir });
       expect(rulesRes.success).toBe(true);
-      expect(rulesRes.messages.length).toBe(5);
+      expect(rulesRes.messages.length).toBe(6);
 
       const agentsDir = path.join(hubDir, 'agents');
       safeWriteFile(path.join(agentsDir, 'test.md'), '---\nname: test\n---\nPrompt');
@@ -782,6 +792,7 @@ Shared outro.`
     });
 
     it('projects addon rules to Codex (~/.codex/AGENTS.md and ChatGPT export)', () => {
+      fs.mkdirSync(path.join(homeDir, '.codex'), { recursive: true }); // Codex installed
       const res = projectCodexRules(homeDir, hubDir);
       expect(res.success).toBe(true);
 

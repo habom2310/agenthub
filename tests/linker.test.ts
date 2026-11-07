@@ -10,7 +10,7 @@ import {
   linkSkillsForGemini,
   projectCodexSkillManifests,
 } from '../src/core/linker.js';
-import { ensureDir, isJunctionOrSymlink, safeWriteFile } from '../src/utils/fs.js';
+import { createJunction, ensureDir, isJunctionOrSymlink, safeWriteFile } from '../src/utils/fs.js';
 
 describe('linker', () => {
   let tmpDir: string;
@@ -230,42 +230,59 @@ describe('linker', () => {
       expect(result.message).toBe('~/.codex directory does not exist');
     });
 
-    it('links skills when ~/.codex exists and migrates pre-existing real dir', () => {
+    it('links ~/.agents/skills (Codex reads it), migrating a real folder, and leaves ~/.codex/skills alone', () => {
       const codexDir = path.join(homeDir, '.codex');
-      const codexSkills = path.join(codexDir, 'skills');
+      const agentsSkills = path.join(homeDir, '.agents', 'skills');
       safeWriteFile(
-        path.join(codexSkills, 'codex-skill', 'SKILL.md'),
+        path.join(agentsSkills, 'codex-skill', 'SKILL.md'),
         '---\nname: codex-skill\ndescription: A Codex test skill.\n---\n# Codex Skill'
       );
+      safeWriteFile(path.join(codexDir, 'skills', '.system', 'sys', 'SKILL.md'), '# system');
 
       const result = linkSkillsForCodex(homeDir, hubDir);
       expect(result.success).toBe(true);
 
-      // Migrated to hub
+      // Migrated to hub, backup kept
       expect(fs.existsSync(path.join(hubDir, 'skills', 'codex-skill', 'SKILL.md'))).toBe(true);
+      expect(fs.existsSync(path.join(homeDir, '.agents', 'skills.old'))).toBe(true);
+      expect(isJunctionOrSymlink(agentsSkills)).toBe(true);
 
-      // skills.old created
-      expect(fs.existsSync(path.join(codexDir, 'skills.old'))).toBe(true);
-
-      // codex/skills is junction
-      expect(isJunctionOrSymlink(codexSkills)).toBe(true);
+      // Codex's own folder and its .system content are untouched, and not linked
+      expect(isJunctionOrSymlink(path.join(codexDir, 'skills'))).toBe(false);
+      expect(fs.readFileSync(path.join(codexDir, 'skills', '.system', 'sys', 'SKILL.md'), 'utf-8')).toBe('# system');
 
       // openai.yaml projected
-      const manifestPath = path.join(hubDir, 'skills', 'codex-skill', 'agents', 'openai.yaml');
-      expect(fs.existsSync(manifestPath)).toBe(true);
+      expect(fs.existsSync(path.join(hubDir, 'skills', 'codex-skill', 'agents', 'openai.yaml'))).toBe(true);
     });
 
-    it('returns error when Codex skills migration fails during rename', () => {
+    it('removes a hub link left in ~/.codex/skills by an older agenthub and restores skills.old', () => {
       const codexDir = path.join(homeDir, '.codex');
-      const codexSkills = path.join(codexDir, 'skills');
-      safeWriteFile(path.join(codexSkills, 'skill-1', 'SKILL.md'), '# S1');
+      safeWriteFile(path.join(codexDir, 'skills', '.system', 'sys', 'SKILL.md'), '# system');
+      safeWriteFile(path.join(codexDir, 'skills', 'mine', 'SKILL.md'), '# mine');
+      // the older behaviour: migrate, keep skills.old, link
+      fs.cpSync(path.join(codexDir, 'skills'), path.join(hubDir, 'skills'), { recursive: true });
+      fs.renameSync(path.join(codexDir, 'skills'), path.join(codexDir, 'skills.old'));
+      createJunction(path.join(hubDir, 'skills'), path.join(codexDir, 'skills'));
+
+      expect(linkSkillsForCodex(homeDir, hubDir).success).toBe(true);
+
+      expect(isJunctionOrSymlink(path.join(codexDir, 'skills'))).toBe(false);
+      expect(fs.existsSync(path.join(codexDir, 'skills', '.system', 'sys', 'SKILL.md'))).toBe(true);
+      expect(fs.existsSync(path.join(codexDir, 'skills.old'))).toBe(false);
+      expect(isJunctionOrSymlink(path.join(homeDir, '.agents', 'skills'))).toBe(true);
+    });
+
+    it('falls back to linking ~/.codex/skills when ~/.agents/skills cannot be linked', () => {
+      ensureDir(path.join(homeDir, '.codex'));
+      safeWriteFile(path.join(homeDir, '.agents', 'skills', 'skill-1', 'SKILL.md'), '# S1');
       const spy = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
         throw new Error('EPERM: operation not permitted');
       });
       const res = linkSkillsForCodex(homeDir, hubDir);
       spy.mockRestore();
-      expect(res.success).toBe(false);
-      expect(res.message).toContain('Failed to migrate skills: EPERM: operation not permitted');
+      expect(res.success).toBe(true);
+      expect(isJunctionOrSymlink(path.join(homeDir, '.codex', 'skills'))).toBe(true);
+      expect(isJunctionOrSymlink(path.join(homeDir, '.agents', 'skills'))).toBe(false);
     });
   });
 

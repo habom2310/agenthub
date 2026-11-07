@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { safeWriteFile } from '../utils/fs.js';
-import { copilotInstalled } from './detector.js';
+import { copilotInstalled, piInstalled } from './detector.js';
 import type { McpServerConfig } from './mcp-sync.js';
 
 /**
@@ -15,10 +15,12 @@ import type { McpServerConfig } from './mcp-sync.js';
  *   (docs moved to https://docs.devin.ai/cli/reference/configuration/read-config-from.md for the paths)
  * - Copilot CLI: ~/.copilot/mcp-config.json, mcpServers; type "local" or "http" and tools ["*"]
  *   (https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)
+ * - Pi: ~/.pi/agent/mcp.json, mcpServers; stdio (command/args/env/cwd) or http (url/headers/oauth),
+ *   no sse, server names of letters, digits, _ and - only
  */
-export type McpPlatformId = 'claude' | 'gemini' | 'codex' | 'cursor' | 'windsurf' | 'copilot';
+export type McpPlatformId = 'claude' | 'gemini' | 'codex' | 'cursor' | 'windsurf' | 'copilot' | 'pi';
 
-export const MCP_PLATFORM_IDS: McpPlatformId[] = ['claude', 'gemini', 'codex', 'cursor', 'windsurf', 'copilot'];
+export const MCP_PLATFORM_IDS: McpPlatformId[] = ['claude', 'gemini', 'codex', 'cursor', 'windsurf', 'copilot', 'pi'];
 
 type Native = Record<string, unknown>;
 
@@ -48,6 +50,8 @@ export interface McpPlatform {
    * Codex, Windsurf, Copilot CLI: no ${VAR} expansion is documented.
    */
   varFields: VarField[];
+  /** Why the platform cannot take this hub server (so sync skips it and doctor warns), or null */
+  unsupported?(name: string, cfg: McpServerConfig): string | null;
 }
 
 export type VarField = 'command' | 'args' | 'env' | 'url' | 'headers' | 'cwd';
@@ -222,7 +226,35 @@ export const MCP_PLATFORMS: Record<McpPlatformId, McpPlatform> = {
       return out as McpServerConfig;
     },
   },
+  pi: {
+    id: 'pi',
+    label: 'Pi',
+    format: 'json',
+    files: (home) => [path.join(home, '.pi', 'agent', 'mcp.json')],
+    writeFiles: (home) => [path.join(home, '.pi', 'agent', 'mcp.json')],
+    installed: (home) => piInstalled(home),
+    // Pi tells stdio from http by command or url; a type the user set is kept
+    owned: JSON_OWNED.filter((k) => k !== 'type'),
+    varFields: [],
+    toNative: (cfg) => without(clone(cfg) as Native, ['type']),
+    fromNative: (native) => without(clone(native), ['oauth']) as McpServerConfig,
+    unsupported(name, cfg) {
+      if (!/^[A-Za-z0-9_-]+$/.test(name)) return 'Pi allows only letters, digits, _ and - in server names';
+      if (cfg.type === 'sse') return 'Pi does not support sse servers (use an http url or a stdio command)';
+      return null;
+    },
+  },
 };
+
+/** Hub servers the platform cannot take, with the reason. */
+export function unsupportedServers(platform: McpPlatform, hubServers: Record<string, McpServerConfig>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, cfg] of Object.entries(hubServers)) {
+    const why = platform.unsupported?.(name, cfg);
+    if (why) out[name] = why;
+  }
+  return out;
+}
 
 // ---- reading ----
 

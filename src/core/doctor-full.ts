@@ -5,7 +5,7 @@ import { runDoctor, type DoctorResult } from './doctor.js';
 import { hasDeclaredSources, itemLabel, planInstall } from './installer.js';
 import { isLinkTo, linkSkillsForAllAssistants } from './linker.js';
 import { envVarsOf, probeMcpServers } from './mcp-probe.js';
-import { MCP_PLATFORMS, MCP_PLATFORM_IDS, type VarField } from './mcp-platforms.js';
+import { MCP_PLATFORMS, MCP_PLATFORM_IDS, unsupportedServers, type VarField } from './mcp-platforms.js';
 import { expandServerPaths, readJsonSafely, syncMcpServers, type McpServerConfig } from './mcp-sync.js';
 import {
   assistantSkillRoots,
@@ -103,6 +103,18 @@ export function varItems(home: string, hub: string): DoctorItem[] {
     }
   }
   return items;
+}
+
+/** Hub servers an installed assistant cannot take (such as an sse server for Pi): sync skips them. */
+export function unsupportedItems(home: string, hub: string): DoctorItem[] {
+  const servers = hubServers(hub, home);
+  return MCP_PLATFORM_IDS.map((id) => MCP_PLATFORMS[id])
+    .filter((p) => p.installed(home))
+    .flatMap((p) =>
+      Object.entries(unsupportedServers(p, servers)).map(
+        ([name, why]): DoctorItem => ({ group: 'mcp', name: `${name} in ${p.label}`, level: 'WARN', message: `not written to ${p.label}: ${why}` })
+      )
+    );
 }
 
 // ---- MCP: start each server and list its tools ----
@@ -314,6 +326,7 @@ export async function runFunctionalChecks(options: FullDoctorOptions = {}): Prom
   const names = [...ignored.mcp, ...ignored.skills];
   if (names.length > 0) items.push({ group: 'setup', name: 'ignored (local)', level: 'INFO', message: names.join(', ') });
   items.push(...varItems(home, hub));
+  items.push(...unsupportedItems(home, hub));
   if (functional) items.push(...(await mcpItems(home, hub, options)));
   return items;
 }
