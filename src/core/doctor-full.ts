@@ -7,7 +7,7 @@ import { runDoctor, type DoctorResult } from './doctor.js';
 import { hasDeclaredSources, itemLabel, modifiedLocally, planInstall } from './installer.js';
 import { isLinkTo, linkSkillsForAllAssistants } from './linker.js';
 import { envVarsOf, probeMcpServers } from './mcp-probe.js';
-import { MCP_PLATFORMS, MCP_PLATFORM_IDS, type VarField } from './mcp-platforms.js';
+import { MCP_PLATFORMS, MCP_PLATFORM_IDS, unsupportedServers, type VarField } from './mcp-platforms.js';
 import { expandServerPaths, readJsonSafely, syncMcpServers, type McpServerConfig } from './mcp-sync.js';
 import {
   assistantSkillRoots,
@@ -19,6 +19,7 @@ import {
   type CheckLevel,
 } from './skill-check.js';
 import { ignoredNames, readIgnored } from './local.js';
+import { npxSkillCopies } from './git-sync.js';
 import { loadDeclaredSources, loadLock, pinOf, runtime } from './sources.js';
 
 export type DoctorGroup = 'setup' | 'skills' | 'sources' | 'mcp';
@@ -105,6 +106,18 @@ export function varItems(home: string, hub: string): DoctorItem[] {
     }
   }
   return items;
+}
+
+/** Hub servers an installed assistant cannot take (such as an sse server for Pi): sync skips them. */
+export function unsupportedItems(home: string, hub: string): DoctorItem[] {
+  const servers = hubServers(hub, home);
+  return MCP_PLATFORM_IDS.map((id) => MCP_PLATFORMS[id])
+    .filter((p) => p.installed(home))
+    .flatMap((p) =>
+      Object.entries(unsupportedServers(p, servers)).map(
+        ([name, why]): DoctorItem => ({ group: 'mcp', name: `${name} in ${p.label}`, level: 'WARN', message: `not written to ${p.label}: ${why}` })
+      )
+    );
 }
 
 // ---- MCP: start each server and list its tools ----
@@ -205,6 +218,16 @@ export function skillItems(home: string, hub: string): DoctorItem[] {
       name: skillName(entry),
       level: worst(issues.map((i) => i.level)),
       message: issues.length === 0 ? 'SKILL.md valid' : issues.map((i) => i.message).join('; '),
+    });
+  }
+
+  const npx = npxSkillCopies(hub, home);
+  if (npx.length > 0) {
+    items.push({
+      group: 'skills',
+      name: 'npx skills copies',
+      level: 'INFO',
+      message: `${npx.join(', ')} came from \`npx skills\` and are kept out of git until declared (run: agenthub adopt)`,
     });
   }
 
@@ -333,6 +356,7 @@ export async function runFunctionalChecks(options: FullDoctorOptions = {}): Prom
   const names = [...ignored.mcp, ...ignored.skills];
   if (names.length > 0) items.push({ group: 'setup', name: 'ignored (local)', level: 'INFO', message: names.join(', ') });
   items.push(...varItems(home, hub));
+  items.push(...unsupportedItems(home, hub));
   if (functional) items.push(...(await mcpItems(home, hub, options)));
   return items;
 }

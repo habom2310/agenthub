@@ -3,6 +3,7 @@ import path from 'node:path';
 import { ensureDir, safeWriteFile } from '../utils/fs.js';
 import { getHomeDir, getHubDir, windsurfDirFor } from './detector.js';
 import {
+  linkAgentsSkillsFirst,
   linkSkillsForClaude,
   linkSkillsForCodex,
   linkSkillsForCursor,
@@ -158,6 +159,7 @@ export function connectPlatform(
 
   const home = homeDir || getHomeDir();
   const hub = hubDir || getHubDir();
+  linkAgentsSkillsFirst(home, hub);
 
   switch (norm) {
     case 'cursor':

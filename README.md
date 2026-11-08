@@ -14,7 +14,7 @@
 npm install -g @habom2310/agenthub && agenthub setup
 ```
 
-Works with **Claude Code · OpenAI Codex · Google Antigravity · Cursor · Windsurf · GitHub Copilot CLI**
+Works with **Claude Code · OpenAI Codex · Google Antigravity · Cursor · Windsurf · GitHub Copilot CLI · Pi**
 
 ---
 
@@ -135,8 +135,10 @@ Commands you approve are remembered on this machine, so a second `install` with 
 
 See [Skills and MCP Servers as Dependencies](docs/GUIDE.md#7b-skills-and-mcp-servers-as-dependencies) for the schema.
 
-**All six assistants get your skills and MCP servers.**
-Skills are linked into Claude, Codex, Windsurf and Copilot CLI (Cursor already reads Claude's and Codex's folders), and MCP servers are written in each assistant's own format, including Codex's `config.toml`, without disturbing the rest of the file.
+**All seven assistants get your skills and MCP servers.**
+Skills are linked into Claude and, when Codex or Pi is installed, into `~/.agents/skills`, the cross-agent folder that Codex, Pi, Cursor, Windsurf and Copilot CLI read, so no assistant lists a skill twice (Windsurf and Copilot CLI keep their own folder when `~/.agents/skills` is not linked).
+`agenthub adopt` also reads the `npx skills` lockfile to find where those skills came from.
+MCP servers are written in each assistant's own format, including Codex's `config.toml`, without disturbing the rest of the file.
 
 **Doctor checks that things work.**
 `agenthub doctor` starts each MCP server, lists its tools, validates every skill, and exits 1 on a failure.
@@ -145,7 +147,7 @@ See [Health checks](docs/GUIDE.md#health-checks-agenthub-doctor) and [Adopt](doc
 
 **Where we are going:**
 
-- ✅ Local hub: one source of truth for six assistants
+- ✅ Local hub: one source of truth for seven assistants
 - ✅ Git sync across machines
 - ✅ Public registry with search, install and GitHub login for publishing
 - ✅ Security scan and token budget before you share or install

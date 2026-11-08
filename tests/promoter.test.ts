@@ -101,6 +101,7 @@ describe('promoter', () => {
     });
 
     it('detects no drift when downstream targets match projected hub rules', () => {
+      fs.mkdirSync(path.join(homeDir, '.codex'), { recursive: true }); // Codex installed
       safeWriteFile(path.join(rulesDir, 'common.md'), '# Common Rules\nRule content.');
       safeWriteFile(path.join(rulesDir, 'code-tools.md'), '# Code Tools\nTool content.');
       safeWriteFile(path.join(rulesDir, 'handoffs.md'), '# Handoffs\nHandoff content.');
@@ -122,6 +123,7 @@ describe('promoter', () => {
     });
 
     it('detects no drift when downstream targets match projected hub rules with addons', () => {
+      fs.mkdirSync(path.join(homeDir, '.codex'), { recursive: true }); // Codex installed
       safeWriteFile(path.join(rulesDir, 'common.md'), '# Common Rules\nRule content.');
       safeWriteFile(path.join(rulesDir, 'code-tools.md'), '# Code Tools\nTool content.');
       safeWriteFile(path.join(rulesDir, 'handoffs.md'), '# Handoffs\nHandoff content.');

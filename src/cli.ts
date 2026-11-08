@@ -251,7 +251,8 @@ export function buildCli(): Command {
 
     // a hub that declares nothing has nothing to link or sync from an install
     if (!isBareHub(hub)) {
-      linkSkillsForAllAssistants({ homeDir: home, hubDir: hub });
+      const linked = linkSkillsForAllAssistants({ homeDir: home, hubDir: hub });
+      if (linked.agents?.message.includes('npx skills')) console.log(pc.yellow(`\n! ${linked.agents.message}`));
       syncMcpServers({ homeDir: home, hubDir: hub });
     }
     if (blockers.length === 0 && !declined) {
@@ -419,11 +420,13 @@ export function buildCli(): Command {
         { name: 'Cursor', info: report.platforms.cursor },
         { name: 'Windsurf', info: report.platforms.windsurf },
         { name: 'Copilot', info: report.platforms.copilot },
+        { name: 'Pi', info: report.platforms.pi },
       ];
 
       for (const p of platformList) {
         const badge = p.info?.detected ? pc.green('[FOUND]') : pc.dim('[NOT FOUND]');
-        console.log(`  ${badge} ${p.name}`);
+        const binOnly = !p.info?.detected && p.name === 'Pi' && p.info?.bin_path;
+        console.log(`  ${badge} ${p.name}${binOnly ? pc.dim(' (pi binary found, no ~/.pi/agent; nothing is written for it)') : ''}`);
       }
     });
 
@@ -526,6 +529,7 @@ export function buildCli(): Command {
       }
 
       printScaffoldSummary(result, isSetup);
+      for (const r of doctorRes.repairs.filter((m) => m.includes('npx skills'))) console.log(pc.yellow(`\n! ${r}`));
 
       console.log(pc.bold('\nConfigured / detected platforms:'));
       const report = detectPlatforms();
@@ -547,6 +551,9 @@ export function buildCli(): Command {
       }
       if (report.platforms.copilot?.detected) {
         configuredPlatforms.push('GitHub Copilot CLI');
+      }
+      if (report.platforms.pi?.detected) {
+        configuredPlatforms.push('Pi');
       }
 
       if (configuredPlatforms.length > 0) {
@@ -614,7 +621,7 @@ export function buildCli(): Command {
     .action((options) => {
       applyHomeOverride(options);
       const res = linkSkillsForAllAssistants();
-      const results = [res.claude, res.gemini, res.codex, res.cursor, res.windsurf, res.copilot].filter((r) => r !== undefined);
+      const results = [res.agents, res.claude, res.gemini, res.codex, res.cursor, res.windsurf, res.copilot, res.pi].filter((r) => r !== undefined);
       for (const r of results) console.log(r.success ? pc.green(`✓ ${r.message}`) : pc.red(`✗ ${r.message}`));
       if (results.some((r) => !r.success)) process.exitCode = 1;
     });
@@ -888,8 +895,6 @@ export function buildCli(): Command {
         console.log(pc.bold('MCP Status:'));
         console.log(`  Sync status:      ${status.in_sync ? pc.green('[IN SYNC]') : pc.yellow('[OUT OF SYNC]')}`);
         console.log(`  Hub servers:      ${Object.keys(status.hub.servers).join(', ') || pc.dim('none')}`);
-        console.log(`  Claude servers:   ${Object.keys(status.claude.servers).join(', ') || pc.dim('none')}`);
-        console.log(`  Gemini servers:   ${Object.keys(status.gemini.servers).join(', ') || pc.dim('none')}`);
         for (const st of Object.values(status.platforms)) {
           const label = `${st.label} servers:`.padEnd(18);
           if (!st.installed) {

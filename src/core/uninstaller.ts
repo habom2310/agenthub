@@ -175,7 +175,8 @@ function isMatchingHubTarget(linkPath: string, hubDir: string): boolean {
 }
 
 /**
- * Checks .claude/skills, .codex/skills, .cursor/skills, .codeium/windsurf/skills, .windsurf/skills, .copilot/skills.
+ * Checks .claude/skills, .codex/skills, .cursor/skills, .codeium/windsurf/skills, .windsurf/skills, .copilot/skills,
+ * .pi/agent/skills and .agents/skills.
  * If it is a symlink/junction pointing to hubDir/skills or includes .agenthub:
  * Unlinks the junction.
  * If skills.old exists in parent directory, renames skills.old -> skills.
@@ -195,6 +196,8 @@ export function cleanupJunctions(
     path.join(homeDir, '.codeium', 'windsurf', 'skills'),
     path.join(homeDir, '.windsurf', 'skills'),
     path.join(homeDir, '.copilot', 'skills'),
+    path.join(homeDir, '.pi', 'agent', 'skills'),
+    path.join(homeDir, '.agents', 'skills'),
   ];
 
   for (const linkPath of candidateLinks) {
@@ -207,9 +210,20 @@ export function cleanupJunctions(
     }
 
     if (!isLink) {
-      // Cursor's link is removed on purpose while Claude or Codex provide the skills: bring its old folder back
+      // only the folders agenthub itself releases: Cursor's and Codex's link is removed on purpose while
+      // ~/.agents/skills (or Claude) provides the skills, and ~/.agents/skills may be gone; bring the old folder back.
+      // Any other skills.old is left alone, and nothing is ever renamed over something that exists.
       const old = path.join(path.dirname(linkPath), 'skills.old');
-      if (linkPath.includes(`${path.sep}.cursor${path.sep}`) && !fs.existsSync(linkPath) && fs.existsSync(old)) {
+      const released = [path.join(homeDir, '.cursor', 'skills'), path.join(homeDir, '.codex', 'skills'), path.join(homeDir, '.agents', 'skills')];
+      const present = (p: string): boolean => {
+        try {
+          fs.lstatSync(p);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      if (released.includes(linkPath) && !present(linkPath) && fs.existsSync(old)) {
         if (!dryRun) fs.renameSync(old, linkPath);
         restored.push(linkPath);
       }
@@ -373,6 +387,10 @@ export function cleanupGeneratedRules(
   const codexRules = path.join(homeDir, '.codex', 'AGENTS.md');
   checkFileRemoval(codexRules, () => isAgenthubContent(readContentSafely(codexRules)));
 
+  // 8b. path.join(homeDir, '.pi', 'agent', 'AGENTS.md'): same for Pi
+  const piRules = path.join(homeDir, '.pi', 'agent', 'AGENTS.md');
+  checkFileRemoval(piRules, () => isAgenthubContent(readContentSafely(piRules)));
+
   // 9. In .claude/agents/*.md and .gemini/config/agents/*.md:
   // if not in restoredFiles, if file contains 'agenthub' or was projected from hubDir/agents/ (including scout.md/implementer.md/reviewer.md), remove
   const agentDirs = [
@@ -428,8 +446,8 @@ export function cleanupGeneratedRules(
 }
 
 /**
- * Removes servers the hub itself wrote into Codex, Cursor, Windsurf and Copilot
- * configs that no backup restored. A server stays when it was ingested from that
+ * Removes servers the hub itself wrote into the Codex, Cursor, Windsurf, Copilot CLI and Pi
+ * configs (every adapter except Claude and Gemini) that no backup restored. A server stays when it was ingested from that
  * platform (it was there before agenthub), when it was never recorded as written
  * there, or when the user changed it since. With purge, a server that would exist
  * nowhere else after the hub is deleted stays too. Each file is read once.

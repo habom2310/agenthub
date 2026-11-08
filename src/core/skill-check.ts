@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'yaml';
 import { isJunctionOrSymlink } from '../utils/fs.js';
-import { SKILL_PLATFORMS } from './detector.js';
+import { SKILL_PLATFORMS, agentsSkillsDir } from './detector.js';
 
 export type CheckLevel = 'PASS' | 'INFO' | 'WARN' | 'FAIL';
 
@@ -139,13 +139,18 @@ export interface SkillRoots {
  * docs.github.com Copilot CLI skills, docs.devin.ai for Windsurf).
  */
 export function assistantSkillRoots(home: string, geminiHubPaths: string[] = []): SkillRoots[] {
-  const out: SkillRoots[] = SKILL_PLATFORMS.filter((p) => p.detected(home)).map((p) => ({
-    id: p.id,
-    label: p.label,
-    // the assistant's own folder first, then the others it also loads
-    roots: [p.skillsDir(home), ...p.alsoReads(home)],
-    linked: p.skillsDir(home),
-  }));
+  const out: SkillRoots[] = SKILL_PLATFORMS.filter((p) => p.detected(home)).map((p) => {
+    // an assistant that gets the hub through ~/.agents/skills does not link its own folder,
+    // but still loads it, so it stays in roots for the duplicate check
+    const viaAgentsDir = !p.linksOwnDir && isJunctionOrSymlink(agentsSkillsDir(home));
+    return {
+      id: p.id,
+      label: p.label,
+      // the assistant's own folder first, then the others it also loads
+      roots: [p.skillsDir(home), ...p.alsoReads(home)],
+      linked: viaAgentsDir ? undefined : p.skillsDir(home),
+    };
+  });
   if (fs.existsSync(path.join(home, '.gemini')) && geminiHubPaths.length > 0) {
     out.push({ id: 'gemini', label: 'Antigravity', roots: geminiHubPaths });
   }

@@ -319,7 +319,9 @@ describe('connector', () => {
       const res = connectPlatform('chatgpt', undefined, homeDir, hubDir);
       expect(res.success).toBe(true);
 
-      expect(isJunctionOrSymlink(path.join(homeDir, '.codex', 'skills'))).toBe(true);
+      // Codex reads ~/.agents/skills, so that is the link (not ~/.codex/skills)
+      expect(isJunctionOrSymlink(path.join(homeDir, '.agents', 'skills'))).toBe(true);
+      expect(isJunctionOrSymlink(path.join(homeDir, '.codex', 'skills'))).toBe(false);
       expect(fs.existsSync(path.join(homeDir, '.codex', 'AGENTS.md'))).toBe(true);
 
       const manifest = JSON.parse(

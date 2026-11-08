@@ -15,6 +15,7 @@ import {
   projectPlatformServers,
   readPlatform,
   sameEntry,
+  unsupportedServers,
   writePlatformServers,
   type McpPlatform,
   type McpPlatformId,
@@ -299,7 +300,9 @@ function platformStatus(
   const drifted: string[] = [];
   const conflicted: string[] = [];
   if (state.installed && state.valid) {
+    const unsupported = unsupportedServers(platform, hubServers);
     for (const name of Object.keys(hubServers)) {
+      if (name in unsupported) continue;
       if (!(name in state.servers)) missing.push(name);
       else if (platformDrifted(platform, state.servers[name], expandedHub[name])) {
         drifted.push(name);
@@ -552,7 +555,7 @@ export function syncMcpServers(
     actions.push('Updated hub servers.json');
   }
 
-  const projectedHub = expandServers(hubServers, home, hub);
+  const allProjected = expandServers(hubServers, home, hub);
 
   const backupDir = path.join(hub, 'backups', `mcp-sync-${getUtcTimestamp()}`);
 
@@ -560,6 +563,11 @@ export function syncMcpServers(
     const platform = MCP_PLATFORMS[id];
     const state = states[id];
     if (!state) continue;
+
+    // servers the platform cannot take are skipped, never written
+    const unsupported = unsupportedServers(platform, allProjected);
+    const projectedHub = Object.fromEntries(Object.entries(allProjected).filter(([n]) => !(n in unsupported)));
+    for (const [n, why] of Object.entries(unsupported)) actions.push(`[SKIP] ${platform.label} cannot take "${n}": ${why}`);
 
     // A different entry that the hub never wrote is the user's: report it, do not overwrite it
     const keep = new Set<string>();

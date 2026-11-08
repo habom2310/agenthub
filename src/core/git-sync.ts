@@ -2,9 +2,11 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureDir, findExecutable, getUtcTimestamp, isJunctionOrSymlink, isWithin, safeWriteFile } from '../utils/fs.js';
-import { getHubDir } from './detector.js';
+import { agentsSkillsDir, getHomeDir, getHubDir } from './detector.js';
+import { readSkillLockNames, skillContentHash } from './skill-lock.js';
+import { loadDeclaredSources } from './sources.js';
 import { isScaffoldDefault } from './scaffold.js';
-import { projectCodexSkillManifests } from './linker.js';
+import { isLinkTo, projectCodexSkillManifests } from './linker.js';
 import { projectAll } from './projector.js';
 import { ignoredNames } from './local.js';
 import { OLD_STATE_PATHS } from './state.js';
@@ -209,6 +211,27 @@ function realish(p: string): string {
 }
 
 /**
+ * Hub skills that are `npx skills` copies, not the hub's own, and so are not committed until
+ * declared: an undeclared name in its lock whose hub folder `npx skills` writes (~/.agents/skills
+ * links to the hub) or was migrated from ~/.agents/skills.old unchanged. A hub skill that only
+ * shares a name with a lock entry stays the hub's.
+ */
+export function npxSkillCopies(hubDir: string, home: string = getHomeDir()): string[] {
+  const skillsDir = path.join(hubDir, 'skills');
+  const declared = new Set(loadDeclaredSources(hubDir).sources.filter((d) => d.kind === 'skills').map((d) => d.name));
+  const npxWritesHub = isLinkTo(agentsSkillsDir(home), skillsDir);
+  const old = path.join(path.dirname(agentsSkillsDir(home)), 'skills.old');
+  return readSkillLockNames(home).filter((n) => {
+    if (declared.has(n) || !fs.existsSync(path.join(skillsDir, n))) return false;
+    if (npxWritesHub) return true;
+    const was = path.join(old, n);
+    if (!fs.existsSync(was)) return false;
+    const h = skillContentHash(was);
+    return h !== null && h === skillContentHash(path.join(skillsDir, n));
+  });
+}
+
+/**
  * Keeps what only works on this machine out of a commit, and returns the hub-relative
  * paths (skills/<name>) that must not be tracked (collections, ignored skills, outside links).
  * Collections are covered by the static .gitignore entries. Locally ignored skills and
@@ -217,7 +240,8 @@ function realish(p: string): string {
  */
 export function ignoreMachineSpecificSkills(hubDir: string): string[] {
   const skillsDir = path.join(hubDir, 'skills');
-  const ignoredSkills = [...ignoredNames(hubDir, 'skills')];
+  const npxSkills = npxSkillCopies(hubDir);
+  const ignoredSkills = [...new Set([...ignoredNames(hubDir, 'skills'), ...npxSkills])];
   const names = [...listSkillCollections(skillsDir), ...ignoredSkills];
 
   const hub = realish(hubDir);

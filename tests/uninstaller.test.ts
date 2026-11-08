@@ -376,6 +376,7 @@ describe('uninstaller', () => {
     });
 
     it('Test 7: Full real projection (initHub -> projectAll -> uninstallHub) cleanly removes all projected files', () => {
+      fs.mkdirSync(path.join(homeDir, '.codex'), { recursive: true }); // Codex installed
       // 1. Initialize real hub in custom sandbox
       initHub({ force: true, customHome: homeDir });
 

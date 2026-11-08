@@ -97,7 +97,7 @@ export function defaultTemplateServers(): Record<string, unknown> {
 
 /**
  * Performs a safe whitelist backup of targeted configuration files
- * from ~/.claude, ~/.gemini, ~/.codex and the Cursor, Windsurf and Copilot MCP configs to prevent data loss.
+ * from ~/.claude, ~/.gemini, ~/.codex and the Cursor, Windsurf, Copilot and Pi MCP configs to prevent data loss.
  * Avoids backing up multi-gigabyte brain/ logs or SQLite databases.
  */
 export function backupExistingConfigs(backupDir: string, customHome?: string): string[] {
@@ -116,6 +116,8 @@ export function backupExistingConfigs(backupDir: string, customHome?: string): s
     path.join(home, '.cursor', 'mcp.json'),
     path.join(home, '.codeium', 'windsurf', 'mcp_config.json'),
     path.join(home, '.copilot', 'mcp-config.json'),
+    path.join(home, '.pi', 'agent', 'AGENTS.md'),
+    path.join(home, '.pi', 'agent', 'mcp.json'),
   ];
 
   for (const t of targets) {

@@ -524,8 +524,9 @@ describe('doctor', () => {
     expect(isJunctionOrSymlink(path.join(customCursor, 'skills'))).toBe(false);
     expect(fs.existsSync(path.join(customCursor, 'rules', 'agenthub.mdc'))).toBe(true);
 
-    // Verify custom windsurf has skills junction and rules
-    expect(isJunctionOrSymlink(path.join(customWindsurf, 'skills'))).toBe(true);
+    // Windsurf also reads ~/.agents/skills, which Codex's link provides, so it gets none of its own
+    expect(isJunctionOrSymlink(path.join(homeDir, '.agents', 'skills'))).toBe(true);
+    expect(isJunctionOrSymlink(path.join(customWindsurf, 'skills'))).toBe(false);
     expect(
       fs.existsSync(path.join(customWindsurf, 'memories', 'global_rules.md'))
     ).toBe(true);
