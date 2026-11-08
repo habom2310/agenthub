@@ -12,7 +12,14 @@ import {
   connectPlatform,
   detectPlatforms,
   actionLabel,
+  checkSources,
   describePlan,
+  isApproved,
+  listPackageSkills,
+  loadApprovals,
+  probeEntries,
+  recordApprovals,
+  resetApprovals,
   detectRuleDrift,
   exportRules,
   getHomeDir,
@@ -34,7 +41,6 @@ import {
   profileUse,
   projectAll,
   promoteChunk,
-  probeTargets,
   runAdopt,
   runDoctor,
   runFullDoctor,
@@ -66,6 +72,8 @@ import {
   deleteCredential,
   resolveToken,
   runDeviceFlow,
+  type CommandRef,
+  type InstallAction,
   type AdoptItem,
   type AdoptChoice,
   type AdoptPrompter,
@@ -128,36 +136,67 @@ export function buildCli(): Command {
     });
   }
 
+  // CI environments default to a frozen lockfile.
+  const isCI = (): boolean => {
+    const v = (process.env.CI ?? '').toLowerCase();
+    return v !== '' && v !== '0' && v !== 'false';
+  };
+  const frozenFor = (options: { frozenLockfile?: boolean }): boolean => options.frozenLockfile ?? isCI();
+
   // Lists what will run beyond the install plan (MCP servers started to verify them) and
-  // asks once. --yes is explicit consent; without a TTY there is nobody to ask.
-  async function consentToProbe(options: { yes?: boolean }, planCount: number): Promise<boolean> {
-    const targets = probeTargets(getHomeDir(), getHubDir());
-    if (targets.length > 0 && (options.yes || process.stdin.isTTY)) {
+  // asks once, unless every command was approved before (same item, same exact text).
+  // --yes is explicit consent and is remembered; a "n" records nothing; without a TTY
+  // there is nobody to ask.
+  async function consent(
+    options: { yes?: boolean },
+    actions: InstallAction[],
+    probe: boolean,
+    known: (ref: CommandRef) => boolean,
+    promptText?: string
+  ): Promise<boolean> {
+    const hub = getHubDir();
+    const targets = probe ? probeEntries(getHomeDir(), hub) : [];
+    const probeRefs = targets.map((t): CommandRef => ({ kind: 'mcp', item: t.name, role: 'probe', text: t.approvalText }));
+    const refs = [...actions.flatMap((a) => a.refs.flat()), ...probeRefs];
+    const fresh = refs.filter((r) => !known(r));
+    if (targets.length > 0 && (options.yes || process.stdin.isTTY || fresh.length === 0)) {
       console.log(pc.bold(`Will start to verify (${targets.length}):`));
-      for (const line of targets) console.log(`  ${line}`);
+      targets.forEach((t, i) => console.log(`  ${t.line}${known(probeRefs[i]) ? '  (approved before)' : ''}`));
     }
-    if (planCount + targets.length === 0) return Boolean(options.yes);
-    if (options.yes) return true;
+    if (actions.length + targets.length === 0) return Boolean(options.yes);
+    if (options.yes) {
+      recordApprovals(hub, fresh);
+      return true;
+    }
+    if (fresh.length === 0) {
+      console.log(pc.dim(`All ${refs.length} command(s) were approved before (agenthub approvals lists them); continuing without asking.`));
+      return true;
+    }
     if (!process.stdin.isTTY) return false;
-    const what = [planCount ? `${planCount} install item(s)` : '', targets.length ? `${targets.length} server(s) to start` : ''].filter(Boolean).join(' and ');
-    return promptConfirm(`Run ${what}? [y/N] `);
+    const what = [actions.length ? `${actions.length} install item(s)` : '', targets.length ? `${targets.length} server(s) to start` : ''].filter(Boolean).join(' and ');
+    const ok = await promptConfirm(promptText ?? `Run ${what}? [y/N] `);
+    if (ok) recordApprovals(hub, fresh);
+    return ok;
   }
 
   // Plans, confirms once, installs declared skills/MCP servers, then links and syncs.
   // Returns blockers (empty when everything is installed) and whether the user
-  // approved running hub-declared commands (--yes, or a "y" at the prompt).
+  // approved running hub-declared commands (--yes, a "y" at the prompt, or approved before).
   // With probe, the commands that setup/pull will start to verify MCP servers are
   // listed after the plan and covered by the same consent.
+  // With frozen, a plan that would change agenthub.lock.json fails instead.
   async function runInstallFlow(
     options: { yes?: boolean },
-    flow: { probe?: boolean; pendingIsBlocker?: boolean } = {}
+    flow: { probe?: boolean; pendingIsBlocker?: boolean; frozen?: boolean } = {}
   ): Promise<{ blockers: string[]; approved: boolean }> {
     const hub = getHubDir();
     const home = getHomeDir();
     const blockers: string[] = [];
     // before planning, so a starter the user replaced with their own is not installed
     for (const a of adoptStarterOverrides({ homeDir: home, hubDir: hub })) console.log(pc.dim(`  ${a}`));
-    const plan = await planInstall(hub);
+    const plan = await planInstall(hub, { frozen: flow.frozen });
+    const approvals = loadApprovals(hub);
+    const known = (ref: CommandRef): boolean => isApproved(approvals, ref);
 
     for (const e of plan.errors) {
       console.error(pc.red(`✗ ${e.item}: ${e.message}`));
@@ -172,13 +211,15 @@ export function buildCli(): Command {
     let declined = false;
     if (plan.actions.length > 0) {
       console.log(pc.bold(`Install plan (${plan.actions.length}):`));
-      for (const line of describePlan(plan)) console.log(`  ${line}`);
+      for (const line of describePlan(plan, known)) console.log(`  ${line}`);
     }
-    const approved = flow.probe
-      ? await consentToProbe(options, plan.actions.length)
-      : plan.actions.length === 0
-        ? Boolean(options.yes)
-        : Boolean(options.yes) || (Boolean(process.stdin.isTTY) && (await promptConfirm(`Run these ${plan.actions.length} item(s)? [y/N] `)));
+    const approved = await consent(
+      options,
+      plan.actions,
+      Boolean(flow.probe),
+      known,
+      flow.probe ? undefined : `Run these ${plan.actions.length} item(s)? [y/N] `
+    );
 
     if (plan.actions.length > 0) {
       if (approved) {
@@ -424,6 +465,7 @@ export function buildCli(): Command {
       templates?: string;
       scaffoldOnly?: boolean;
       yes?: boolean;
+      frozenLockfile?: boolean;
       home?: string;
     }
   ) => {
@@ -445,8 +487,8 @@ export function buildCli(): Command {
       const hubDir = getHubDir();
       // setup and init finish even when the user declines the plan: pending items are reported, not blockers
       const flow = hasDeclaredSources(hubDir)
-        ? await runInstallFlow(options, { probe: true, pendingIsBlocker: false })
-        : { blockers: [] as string[], approved: await consentToProbe(options, 0) };
+        ? await runInstallFlow(options, { probe: true, pendingIsBlocker: false, frozen: frozenFor(options) })
+        : { blockers: [] as string[], approved: await consent(options, [], true, (r) => isApproved(loadApprovals(hubDir), r)) };
       const installBlockers = flow.blockers;
       const doctorRes = runDoctor({ fix: true, homeDir, hubDir });
       doctorRes.issues.unshift(...installBlockers);
@@ -548,6 +590,8 @@ export function buildCli(): Command {
     .option('-t, --templates <dir>', 'Custom templates directory')
     .option('--scaffold-only', 'Only scaffold ~/.agenthub directory without auto-wiring assistants')
     .option('-y, --yes', 'Install declared skills and MCP servers without confirmation')
+    .option('--frozen-lockfile', 'Fail instead of changing agenthub.lock.json (default when CI is set)')
+    .option('--no-frozen-lockfile', 'Allow agenthub.lock.json to change even when CI is set')
     .option('-H, --home <dir>', 'Sets custom home directory')
     .action(async (options) => {
       await handleSetupOrInit('setup', options);
@@ -562,6 +606,8 @@ export function buildCli(): Command {
     .option('-t, --templates <dir>', 'Custom templates directory')
     .option('--scaffold-only', 'Only scaffold ~/.agenthub directory without auto-wiring assistants')
     .option('-y, --yes', 'Install declared skills and MCP servers without confirmation')
+    .option('--frozen-lockfile', 'Fail instead of changing agenthub.lock.json (default when CI is set)')
+    .option('--no-frozen-lockfile', 'Allow agenthub.lock.json to change even when CI is set')
     .option('-H, --home <dir>', 'Sets custom home directory')
     .action(async (options) => {
       await handleSetupOrInit('init', options);
@@ -1008,6 +1054,8 @@ export function buildCli(): Command {
     .option('-b, --branch <branch>', 'Branch to pull')
     .option('--no-reproject', 'Skip auto-reprojecting rules, manifests and installs after pull')
     .option('-y, --yes', 'Install declared skills and MCP servers without confirmation')
+    .option('--frozen-lockfile', 'Fail instead of changing agenthub.lock.json (default when CI is set)')
+    .option('--no-frozen-lockfile', 'Allow agenthub.lock.json to change even when CI is set')
     .option('-H, --home <dir>', 'Sets custom home directory')
     .action(async (options) => {
       applyHomeOverride(options);
@@ -1015,7 +1063,7 @@ export function buildCli(): Command {
       if (res.ok) {
         console.log(pc.green(`✓ ${res.message}`));
         if (options.reproject !== false) {
-          const flow = await runInstallFlow(options, { probe: true });
+          const flow = await runInstallFlow(options, { probe: true, frozen: frozenFor(options) });
           if (flow.blockers.length > 0) process.exitCode = 1;
           await runPostChecks(flow.approved);
         }
@@ -1030,11 +1078,13 @@ export function buildCli(): Command {
     .command('install')
     .description('Install the skills and MCP servers declared in agenthub.json (pinned by agenthub.lock.json)')
     .option('-y, --yes', 'Skip the confirmation prompt')
+    .option('--frozen-lockfile', 'Fail instead of changing agenthub.lock.json (default when CI is set)')
+    .option('--no-frozen-lockfile', 'Allow agenthub.lock.json to change even when CI is set')
     .option('-H, --home <dir>', 'Sets custom home directory')
     .action(async (options) => {
       applyHomeOverride(options);
       try {
-        if ((await runInstallFlow(options)).blockers.length > 0) process.exitCode = 1;
+        if ((await runInstallFlow(options, { frozen: frozenFor(options) })).blockers.length > 0) process.exitCode = 1;
       } catch (err) {
         console.error(pc.red(`✗ ${(err as Error).message}`));
         process.exitCode = 1;
@@ -1062,6 +1112,48 @@ export function buildCli(): Command {
         console.error(pc.red(`✗ ${(err as Error).message}`));
         process.exitCode = 1;
       }
+    });
+
+  // 15d. check
+  program
+    .command('check')
+    .description('Report declared sources that are outdated or modified locally, without installing (exit 1 if any)')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action(async (options) => {
+      applyHomeOverride(options);
+      try {
+        const { findings, dirty } = await checkSources(getHubDir());
+        if (findings.length === 0) console.log(pc.dim('  No pinned sources are declared.'));
+        for (const f of findings) {
+          const mark = f.status === 'current' ? pc.green('✓') : f.status === 'error' ? pc.red('✗') : pc.yellow('!');
+          console.log(`  ${mark} ${f.item}: ${f.message}`);
+        }
+        if (dirty) {
+          console.log(pc.yellow('Run agenthub update to take new pins, or agenthub install to restore modified skills.'));
+          process.exitCode = 1;
+        }
+      } catch (err) {
+        console.error(pc.red(`✗ ${(err as Error).message}`));
+        process.exitCode = 1;
+      }
+    });
+
+  // 15e. approvals
+  program
+    .command('approvals')
+    .description('List the commands approved to run on this machine, or forget them with --reset')
+    .option('--reset', 'Forget every approval, so the next install asks again')
+    .option('-H, --home <dir>', 'Sets custom home directory')
+    .action((options) => {
+      applyHomeOverride(options);
+      const hub = getHubDir();
+      if (options.reset) {
+        console.log(pc.green(`✓ Cleared ${resetApprovals(hub)} approval(s)`));
+        return;
+      }
+      const list = loadApprovals(hub);
+      if (list.length === 0) console.log(pc.dim('  No commands are approved on this machine.'));
+      for (const e of list) console.log(`  ${e.kind === 'skills' ? 'skill' : 'mcp'} ${e.item} [${e.role}] ${e.sha256.slice(0, 12)}  ${e.command}`);
     });
 
   // 16. info
@@ -1160,13 +1252,23 @@ export function buildCli(): Command {
       const items = val.split(',').map((s) => s.trim()).filter(Boolean);
       return [...prev, ...items];
     }, [] as string[])
+    .option('--ref <ref>', 'Branch, tag or commit of a remote target')
+    .option('-l, --list', 'List the skills found in the target and exit, installing nothing')
     .option('-y, --yes', 'Skip interactive security confirmation')
     .option('-H, --home <dir>', 'Sets custom home directory')
     .action(async (target, options) => {
       applyHomeOverride(options);
       try {
+        if (options.list) {
+          const { identifier, skills, warnings } = listPackageSkills(target, options.ref);
+          if (skills.length === 0) console.log(pc.dim(`  No skills found in ${identifier}.`));
+          else console.log(pc.bold(`Skills in ${identifier} (${skills.length}):`));
+          for (const sk of skills) console.log(`  ${sk.name}  ${pc.dim(sk.rel || '.')}${sk.description ? ` - ${sk.description}` : ''}`);
+          for (const w of warnings) console.log(pc.yellow(`  ⚠ ${w}`));
+          return;
+        }
         if (!options.yes && process.stdin.isTTY) {
-          const report = packageInfo(target);
+          const report = packageInfo(target, options.ref);
           const hasMcp = report.mcpServers.length > 0;
           const hasScripts = report.scripts.length > 0;
           const isHighRisk = report.riskLevel === 'MEDIUM' || report.riskLevel === 'HIGH';
@@ -1207,6 +1309,7 @@ export function buildCli(): Command {
         }
 
         const res = packageAdd(target, {
+          ref: options.ref,
           rulesOnly: Boolean(options.rulesOnly),
           skills: selectedSkills,
         });

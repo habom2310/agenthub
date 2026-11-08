@@ -32,6 +32,7 @@ describe.skipIf(process.platform === 'win32')('E2E: declared skills and MCP serv
     vi.restoreAllMocks();
     setCustomHome(null, null);
     process.exitCode = undefined;
+    for (const k of ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0']) delete process.env[k];
     if (savedTools === undefined) delete process.env.E2E_TOOLS;
     else process.env.E2E_TOOLS = savedTools;
     // git can still be finishing background writes in tmp; retry on ENOTEMPTY
@@ -65,7 +66,11 @@ describe.skipIf(process.platform === 'win32')('E2E: declared skills and MCP serv
     write(path.join(oldHub, 'skills', 'mine', 'SKILL.md'), '---\nname: mine\ndescription: Mine\n---\n# Mine');
     const manifestPath = path.join(oldHub, 'agenthub.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-    manifest.skills = { mine: 'local', 'remote-skill': `git:file://${skillRepo}#skills/remote-skill` };
+    // file: sources are refused in agenthub.json, so the https URL is redirected to the local repo
+    process.env.GIT_CONFIG_COUNT = '1';
+    process.env.GIT_CONFIG_KEY_0 = `url.file://${skillRepo}.insteadOf`;
+    process.env.GIT_CONFIG_VALUE_0 = 'https://git.example.test/skill-repo.git';
+    manifest.skills = { mine: 'local', 'remote-skill': 'git:https://git.example.test/skill-repo.git#skills/remote-skill' };
     manifest.mcp = { tool: customInstall };
     write(manifestPath, JSON.stringify(manifest, null, 2));
     write(

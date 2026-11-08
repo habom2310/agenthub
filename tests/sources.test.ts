@@ -26,9 +26,9 @@ describe('parseSourceSpec', () => {
       url: 'https://github.com/o/r.git',
       subpath: 'skills/a',
     });
-    expect(parseSourceSpec('skills', 'a', 'git:file:///tmp/r#skills/a').parsed).toMatchObject({
+    expect(parseSourceSpec('skills', 'a', 'git:https://git.example.com/r.git#skills/a').parsed).toMatchObject({
       type: 'git',
-      url: 'file:///tmp/r',
+      url: 'https://git.example.com/r.git',
       subpath: 'skills/a',
     });
     expect(parseSourceSpec('mcp', 'a', 'npm:@scope/pkg@^1.2').parsed).toEqual({

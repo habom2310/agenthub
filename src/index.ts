@@ -164,6 +164,7 @@ export {
 } from './core/doctor.js';
 export {
   probeTargets,
+  probeEntries,
   runFullDoctor,
   runFunctionalChecks,
   structuralItems,
@@ -263,7 +264,21 @@ export {
   type InstallProblem,
   type InstallResult,
   type PinChange,
+  type PlanOptions,
 } from './core/installer.js';
+export { hashFolder } from './core/hash.js';
+export { checkSources, type CheckFinding, type CheckResult } from './core/check.js';
+export {
+  approvalsPath,
+  loadApprovals,
+  isApproved,
+  recordApprovals,
+  resetApprovals,
+  type ApprovalEntry,
+  type CommandRef,
+} from './core/approvals.js';
+export { parseRemoteTarget, parseGitUrl, parseShorthand, type RemoteSpec } from './core/source-url.js';
+export { discoverSkills, selectSkills, type DiscoveredSkill } from './core/skill-discovery.js';
 
 // Core Security
 export {
@@ -281,6 +296,7 @@ export {
   resolvePackageTarget,
   packageInfo,
   packageAdd,
+  listPackageSkills,
   sanitizeIdentifier,
   type AddPackageOptions,
   type AddPackageResult,

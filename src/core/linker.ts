@@ -3,6 +3,7 @@ import path from 'node:path';
 import yaml from 'yaml';
 import { backupSkillsDir, createJunction, ensureDir, isJunctionOrSymlink, isWithin, safeWriteFile } from '../utils/fs.js';
 import { agentsSkillsDir, getHomeDir, getHubDir, windsurfDirFor, skillPlatform, SKILL_PLATFORMS, type SkillPlatform, type SkillPlatformId } from './detector.js';
+import { GENERATED_MARK } from './hash.js';
 
 export interface LinkResult {
   success: boolean;
@@ -297,7 +298,7 @@ export function projectCodexSkillManifests(
       },
     });
 
-    safeWriteFile(manifestPath, yamlContent);
+    safeWriteFile(manifestPath, `${GENERATED_MARK}\n${yamlContent}`);
     generated.push(name);
   }
 

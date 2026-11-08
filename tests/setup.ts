@@ -13,6 +13,11 @@ delete process.env.AGENTHUB_HUB;
 // CI forces colour; output assertions expect plain text.
 process.env.NO_COLOR = '1';
 delete process.env.FORCE_COLOR;
+// CI makes install default to a frozen lockfile; tests opt in explicitly.
+delete process.env.CI;
+// machine-local state goes under the throwaway home too
+delete process.env.XDG_STATE_HOME;
+process.env.LOCALAPPDATA = path.join(home, 'AppData', 'Local');
 
 // A `pi` binary on the developer's PATH would make every temp home look like it has Pi installed.
 process.env.PATH = (process.env.PATH ?? '')

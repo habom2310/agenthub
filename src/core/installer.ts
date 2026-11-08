@@ -1,15 +1,18 @@
-import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createJunction, ensureDir, isJunctionOrSymlink, isWithin, safeWriteFile } from '../utils/fs.js';
 import { getHomeDir, getHubDir } from './detector.js';
 import { ensureGitignore, readManagedIgnoreBlock, updateManagedIgnoreBlock } from './git-sync.js';
-import { loadManifest, setDeclaredSource } from './manifest.js';
+import type { CommandRef } from './approvals.js';
+import { BUILD_HASH_SKIP, hashEntries, hashFolder, hashSkill } from './hash.js';
+import { loadManifest, setDeclaredSource, type SourceSpec } from './manifest.js';
 import { readJsonSafely, type McpServerConfig } from './mcp-sync.js';
 import { ignoredNames } from './local.js';
 import {
   emptyLock,
+  isLocalBuild,
   isPinned,
+  serializeLock,
   loadDeclaredSources,
   loadLock,
   loadLockChecked,
@@ -20,6 +23,7 @@ import {
   runtime,
   runTool,
   sameSource,
+  sameSpec,
   saveLock,
   type DeclaredSource,
   type LockEntry,
@@ -33,6 +37,8 @@ export interface InstallAction {
   type: DeclaredSource['parsed']['type'];
   /** Exact commands that will run, one display line each */
   commands: string[];
+  /** Per display line, the commands on it that need approval (same length as `commands`) */
+  refs: CommandRef[][];
   /** check/manual: a custom item whose state is only known once its check runs */
   reason: 'missing' | 'outdated' | 'check' | 'manual';
   decl: DeclaredSource;
@@ -50,6 +56,12 @@ export interface InstallPlan {
   errors: InstallProblem[];
   warnings: string[];
   lock: LockFile;
+  /** Frozen lockfile: running the plan must not change agenthub.lock.json, so it is never saved */
+  frozen: boolean;
+}
+
+export interface PlanOptions {
+  frozen?: boolean;
 }
 
 export interface InstallResult {
@@ -148,20 +160,77 @@ export function skillTarget(hub: string, decl: DeclaredSource): string | null {
 
 // ---- install state: what a vendored item was last installed from ----
 
-const SKIP_HASH = new Set(['node_modules', '.git', 'dist', 'build', 'out', 'target', '.venv', '__pycache__', '.next']);
+/** cpSync filter for skills taken from a checkout: no .git, and no symlinks (they could point anywhere). */
+export const copyable = (src: string): boolean => path.basename(src) !== '.git' && !fs.lstatSync(src).isSymbolicLink();
 
-function hashDir(dir: string): string {
-  const hash = createHash('sha256');
-  const walk = (d: string): void => {
-    for (const entry of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      if (SKIP_HASH.has(entry.name)) continue;
-      const full = path.join(d, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.isFile()) hash.update(path.relative(dir, full) + '\0').update(fs.readFileSync(full));
+/**
+ * Removes the symlinks from a fetched folder, so `add` and `install` vendor (and hash)
+ * the same files on every platform. In a git checkout that includes the links git wrote
+ * as plain files (core.symlinks=false, the Windows default).
+ */
+export function dropLinks(root: string): void {
+  const res = runtime.spawn('git', ['ls-files', '-s', '-z'], root);
+  if (res.status === 0 && !res.error && typeof res.stdout === 'string') {
+    for (const line of res.stdout.split('\0')) {
+      const m = line.match(/^120000 [0-9a-f]+ \d+\t(.+)$/);
+      if (m) fs.rmSync(path.join(root, m[1]), { recursive: true, force: true });
+    }
+  }
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) fs.rmSync(full, { recursive: true, force: true });
+      else if (entry.isDirectory() && entry.name !== '.git') walk(full);
     }
   };
-  walk(dir);
-  return hash.digest('hex');
+  walk(root);
+}
+
+/**
+ * Hash of the sources of a local MCP build: what git tracks plus what it does not
+ * ignore (a fixed git command, nothing the hub declares), or the whole folder outside
+ * git. The usual build output folders are left out either way.
+ */
+export function localBuildHash(hub: string, name: string): string {
+  const dir = localMcpDir(hub, name);
+  const res = runtime.spawn('git', ['ls-files', '-co', '--exclude-standard', '-z'], dir);
+  if (res.status === 0 && !res.error) {
+    const rels = [...new Set(res.stdout.split('\0').filter(Boolean))].filter((rel) => {
+      if (rel.split('/').slice(0, -1).some((seg) => BUILD_HASH_SKIP.has(seg))) return false;
+      try {
+        const st = fs.lstatSync(path.join(dir, rel));
+        return st.isFile() || st.isSymbolicLink();
+      } catch {
+        return false; // tracked but deleted
+      }
+    });
+    if (rels.length > 0) return hashEntries(dir, rels);
+  }
+  return hashFolder(dir, BUILD_HASH_SKIP);
+}
+
+/** A vendored skill (git/github/npm): its folder is what the lock hash covers. */
+function vendoredSkillDir(hub: string, decl: DeclaredSource): string | null {
+  return decl.kind === 'skills' && ['github', 'git', 'npm'].includes(decl.parsed.type) ? skillTarget(hub, decl) : null;
+}
+
+/** True when a vendored skill's folder on disk differs from the hash in its lock entry. */
+export function modifiedLocally(hub: string, decl: DeclaredSource, entry: LockEntry | undefined): boolean {
+  const dir = vendoredSkillDir(hub, decl);
+  if (!dir || !entry?.hash || !isDir(dir)) return false;
+  return hashSkill(dir) !== entry.hash;
+}
+
+const short = (hash: string): string => hash.slice(0, 12);
+
+/** After a fetch: the content must match the locked hash; a lock entry without one records it. */
+function verifyHash(a: InstallAction, dir: string): void {
+  if (a.kind !== 'skills' || !a.pin) return;
+  const actual = hashSkill(dir);
+  if (a.pin.hash === undefined) a.pin.hash = actual;
+  else if (a.pin.hash !== actual) {
+    throw new Error(`content differs from lock (locked ${short(a.pin.hash)}, fetched ${short(actual)}); the source changed, run: agenthub update`);
+  }
 }
 
 /** The state an up-to-date install has: the commit/version, plus build string and (local) source hash. */
@@ -169,7 +238,8 @@ function desiredState(hub: string, decl: DeclaredSource, pin?: LockEntry): strin
   const p = decl.parsed;
   if (p.type === 'github' || p.type === 'git') return `${pin?.commit}|${p.build ?? ''}`;
   if (p.type === 'npm') return pin?.version;
-  if (p.type === 'local' && p.build) return `${p.build}|${hashDir(localMcpDir(hub, decl.name))}`;
+  // the hash taken before the build (the lock's), so files the build writes do not count
+  if (p.type === 'local' && p.build) return `${p.build}|${pin?.hash ?? localBuildHash(hub, decl.name)}`;
   return undefined;
 }
 
@@ -222,7 +292,7 @@ function prunedLock(lock: LockFile, sources: DeclaredSource[], hub: string): Loc
   for (const n of ignoredNames(hub, 'mcp')) if (lock.mcp[n]) out.mcp[n] = lock.mcp[n];
   for (const d of sources) {
     const entry = lock[d.kind][d.name];
-    if (isPinned(d) && entry) out[d.kind][d.name] = entry;
+    if ((isPinned(d) || isLocalBuild(d)) && entry) out[d.kind][d.name] = entry;
   }
   return out;
 }
@@ -249,8 +319,9 @@ export function hasDeclaredSources(hubDir?: string): boolean {
  * nothing the hub declares (custom check/install/build): those run after
  * approval, in runInstall. Nothing is written here.
  */
-export async function planInstall(hubDir?: string): Promise<InstallPlan> {
+export async function planInstall(hubDir?: string, options: PlanOptions = {}): Promise<InstallPlan> {
   const hub = hubDir || getHubDir();
+  const frozen = Boolean(options.frozen);
   const { sources, errors: manifestErrors } = loadDeclaredSources(hub);
   const { lock: loaded, invalid } = loadLockChecked(hub);
   const lock = emptyLock();
@@ -258,10 +329,16 @@ export async function planInstall(hubDir?: string): Promise<InstallPlan> {
   const errors: InstallProblem[] = manifestErrors.map((message) => ({ item: 'agenthub.json', message }));
   const warnings: string[] = [];
   const servers = hubMcpServers(hub);
+  let frozenViolation = false;
+  const notFrozen = (what: string): Error => {
+    frozenViolation = true;
+    return new Error(`${what} (frozen lockfile: run agenthub install --no-frozen-lockfile and commit agenthub.lock.json)`);
+  };
 
   for (const decl of sources) {
     const item = itemLabel(decl.kind, decl.name);
     const p = decl.parsed;
+    const ref = (role: string, text: string): CommandRef => ({ kind: decl.kind, item: decl.name, role, text });
     try {
       const bad = invalid[`${decl.kind}.${decl.name}`];
       if (bad) throw new Error(bad);
@@ -270,8 +347,17 @@ export async function planInstall(hubDir?: string): Promise<InstallPlan> {
       if (isPinned(decl)) {
         const existing = loaded[decl.kind][decl.name];
         const usable = existing && sameSource(existing.source, decl.spec) && pinOf(existing) !== undefined;
-        pin = usable ? { ...existing, source: decl.spec } : await resolvePin(decl);
+        if (!usable && frozen) throw notFrozen('has no pin in agenthub.lock.json');
+        // an equivalent spelling keeps the entry as it is; a changed subpath is other content, so its hash goes
+        const same = Boolean(usable && sameSpec(existing.source, decl.spec));
+        pin = usable ? { ...existing, source: same ? existing.source : decl.spec } : await resolvePin(decl);
+        if (usable && !same) delete pin.hash;
         lock[decl.kind][decl.name] = pin;
+      } else if (isLocalBuild(decl) && isDir(localMcpDir(hub, decl.name))) {
+        pin = lock[decl.kind][decl.name] = { source: decl.spec, hash: localBuildHash(hub, decl.name) };
+      }
+      if (frozen && pin && decl.kind === 'skills' && !pin.hash && vendoredSkillDir(hub, decl)) {
+        throw notFrozen('has no content hash in agenthub.lock.json');
       }
 
       if (decl.kind === 'mcp' && p.type !== 'npm' && p.type !== 'pypi' && !(decl.name in servers)) {
@@ -280,7 +366,7 @@ export async function planInstall(hubDir?: string): Promise<InstallPlan> {
 
       // Queues an action unless the item is already installed at the desired state.
       // probe: path whose absence means "not installed"; without one, the recorded state decides.
-      const add = (commands: string[], probe: string | undefined, tools: string[] = []): void => {
+      const add = (commands: string[], refs: CommandRef[], probe: string | undefined, tools: string[] = []): void => {
         const state = desiredState(hub, decl, pin);
         const recorded = recordedState(hub, decl);
         const exists = probe === undefined ? recorded !== undefined : fs.existsSync(probe);
@@ -289,27 +375,29 @@ export async function planInstall(hubDir?: string): Promise<InstallPlan> {
           const missing = toolMissing(tool);
           if (missing) throw new Error(missing);
         }
-        actions.push({ item: decl.name, kind: decl.kind, type: p.type, commands, reason: exists || recorded !== undefined ? 'outdated' : 'missing', decl, pin });
+        actions.push({ item: decl.name, kind: decl.kind, type: p.type, commands, refs: [refs], reason: exists || recorded !== undefined ? 'outdated' : 'missing', decl, pin });
       };
 
       switch (p.type) {
         case 'local': {
           const dir = decl.kind === 'skills' ? path.join(hub, 'skills', decl.name) : localMcpDir(hub, decl.name);
           if (!isDir(dir)) throw new Error(`declared "local" but ${relTo(hub, dir)}/ does not exist`);
-          if (p.build) add([`${p.build}  (in ${relTo(hub, dir)})`], undefined);
+          if (p.build) add([`${p.build}  (in ${relTo(hub, dir)})`], [ref('build', `${p.build}  [sources sha256:${pin?.hash ?? localBuildHash(hub, decl.name)}]`)], undefined);
           break;
         }
         case 'github':
         case 'git': {
           const dir = vendorDir(hub, decl.kind, decl.name);
+          const fetch = gitSteps(p.url, pin?.commit as string).map(fmt).join(' && ');
           const line = gitSteps(p.url, pin?.commit as string, p.build).map(fmt).join(' && ');
-          add([`${line}  (in ${relTo(hub, dir)})`], decl.kind === 'skills' ? (skillTarget(hub, decl) as string) : dir, ['git']);
+          const refs = [ref('fetch', fetch), ...(p.build ? [ref('build', `${p.build}  [commit ${pin?.commit}]`)] : [])];
+          add([`${line}  (in ${relTo(hub, dir)})`], refs, decl.kind === 'skills' ? (skillTarget(hub, decl) as string) : dir, ['git']);
           break;
         }
         case 'npm': {
           if (decl.kind === 'mcp') break;
           const line = npmSteps(p.pkg, pin?.version as string).map(fmt).join(' && ');
-          add([`${line}  (into ${relTo(hub, vendorDir(hub, decl.kind, decl.name))})`], skillTarget(hub, decl) as string, ['npm', 'tar']);
+          add([`${line}  (into ${relTo(hub, vendorDir(hub, decl.kind, decl.name))})`], [ref('fetch', line)], skillTarget(hub, decl) as string, ['npm', 'tar']);
           break;
         }
         case 'pypi': {
@@ -326,26 +414,51 @@ export async function planInstall(hubDir?: string): Promise<InstallPlan> {
             commands: p.install
               ? [`check:   ${p.check}`, `install: ${p.install}  (only if check fails)`]
               : [`check:   ${p.check}`, 'no install command: if the check fails, install it yourself, then re-run'],
+            refs: p.install ? [[ref('check', p.check)], [ref('install', p.install)]] : [[ref('check', p.check)], []],
             reason: p.install ? 'check' : 'manual',
             decl,
           });
           break;
       }
+
+      // a lock written before hashes existed: record the folder as installed (an install records it itself)
+      const vendored = vendoredSkillDir(hub, decl);
+      const queued = actions.some((a) => a.item === decl.name && a.kind === decl.kind);
+      if (pin && !pin.hash && !frozen && !queued && vendored && isDir(vendored)) pin.hash = hashSkill(vendored);
     } catch (err) {
       errors.push({ item, message: (err as Error).message });
     }
   }
 
   for (const n of ignoredNames(hub, 'mcp')) if (loaded.mcp[n]) lock.mcp[n] = loaded.mcp[n];
-  return { hub, actions, errors, warnings, lock };
+
+  if (frozen) {
+    const before = JSON.parse(serializeLock(loaded)) as LockFile;
+    const after = JSON.parse(serializeLock(lock)) as LockFile;
+    const changed = (['skills', 'mcp'] as const).flatMap((k) =>
+      [...new Set([...Object.keys(before[k]), ...Object.keys(after[k])])]
+        .filter((n) => JSON.stringify(before[k][n]) !== JSON.stringify(after[k][n]))
+        .map((n) => `${k}.${n}`)
+    );
+    if (changed.length > 0) {
+      frozenViolation = true;
+      errors.push({ item: 'agenthub.lock.json', message: `would change (${changed.join(', ')}); frozen lockfile: run agenthub install --no-frozen-lockfile and commit it` });
+    }
+    // nothing installs from a lockfile that does not match the hub
+    if (frozenViolation) actions.length = 0;
+  }
+  return { hub, actions, errors, warnings, lock, frozen };
 }
 
-/** Human-readable plan: every command that will run, per item. */
-export function describePlan(plan: InstallPlan): string[] {
+/** Human-readable plan: every command that will run, per item. `approved` marks commands approved before. */
+export function describePlan(plan: InstallPlan, approved: (ref: CommandRef) => boolean = () => false): string[] {
   const lines: string[] = [];
   for (const a of plan.actions) {
     lines.push(`${actionLabel(a)} [${a.reason}]`);
-    for (const c of a.commands) lines.push(`    ${c}`);
+    a.commands.forEach((c, i) => {
+      const refs = a.refs[i] ?? [];
+      lines.push(`    ${c}${refs.length > 0 && refs.every(approved) ? '  (approved before)' : ''}`);
+    });
   }
   return lines;
 }
@@ -404,7 +517,9 @@ function installFromGit(hub: string, a: InstallAction): void {
         runTool('git', ['fetch', '-q', '--', p.url, '+refs/heads/*:refs/remotes/origin/*', '+refs/tags/*:refs/tags/*'], tmp);
       }
     }
+    dropLinks(tmp);
     checkSubpath(tmp, p.subpath, `${p.url}@${commit.slice(0, 12)}`);
+    verifyHash(a, path.join(tmp, p.subpath ?? ''));
     swapIn(tmp, finalDir);
   } catch (err) {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -426,7 +541,9 @@ function installFromNpm(hub: string, a: InstallAction): void {
     const [pack, untar] = npmSteps(p.pkg, version);
     const tarball = runTool('npm', pack.args as string[], work).trim().split(/\r?\n/).pop() as string;
     runTool('tar', (untar.args as string[]).map((x) => (x === '<tarball>' ? tarball : x)), work);
+    dropLinks(extracted);
     checkSubpath(extracted, p.subpath, `${p.pkg}@${version}`);
+    verifyHash(a, path.join(extracted, p.subpath ?? ''));
     swapIn(extracted, finalDir);
   } finally {
     fs.rmSync(work, { recursive: true, force: true });
@@ -478,7 +595,7 @@ export function runInstall(plan: InstallPlan): InstallResult {
       failed.push({ item: actionLabel(a), message: (err as Error).message });
     }
   }
-  if (!isBareHub(plan.hub)) saveLock(plan.hub, plan.lock);
+  if (!plan.frozen && !isBareHub(plan.hub)) saveLock(plan.hub, plan.lock);
   failed.push(...finalizeInstall(plan.hub, [...failed, ...manual].map((f) => f.item)));
   return { installed, already, manual, failed };
 }
@@ -579,16 +696,16 @@ export function finalizeInstall(hubDir?: string, skipItems: string[] = []): Inst
 export function vendorCheckedOutSkill(
   hub: string,
   name: string,
-  spec: string,
+  spec: SourceSpec,
   commit: string,
   skillDir: string
 ): void {
   const decl = parseSourceSpec('skills', name, spec);
-  const pin = { source: decl.spec, commit };
   const target = skillTarget(hub, decl) as string;
   fs.rmSync(vendorDir(hub, 'skills', name), { recursive: true, force: true });
   ensureDir(path.dirname(target));
-  fs.cpSync(skillDir, target, { recursive: true });
+  fs.cpSync(skillDir, target, { recursive: true, filter: copyable });
+  const pin: LockEntry = { source: decl.spec, commit, hash: hashSkill(target) };
   recordState(hub, decl, pin);
   const lock = loadLock(hub);
   lock.skills[name] = pin;
@@ -626,6 +743,7 @@ export async function updatePins(
     try {
       const next = await resolvePin(decl);
       const prev = lock[decl.kind][decl.name];
+      if (prev?.hash && pinOf(prev) === pinOf(next) && prev.source === next.source) next.hash = prev.hash;
       if (pinOf(prev) !== pinOf(next) || prev?.source !== next.source) {
         changes.push({ item: itemLabel(decl.kind, decl.name), from: pinOf(prev), to: pinOf(next) as string });
       }

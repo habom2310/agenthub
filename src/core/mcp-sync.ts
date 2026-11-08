@@ -6,6 +6,7 @@ import { ignoredNames } from './local.js';
 import { DEFAULT_MANIFEST_MCP, removeDeclaredSource } from './manifest.js';
 import { defaultTemplateServers } from './scaffold.js';
 import { loadLock, saveLock } from './sources.js';
+import { stateFile } from './state.js';
 import {
   MCP_PLATFORMS,
   MCP_PLATFORM_IDS,
@@ -266,7 +267,7 @@ export interface McpOrigin {
 }
 
 export function originsPath(hub: string): string {
-  return path.join(hub, 'mcp', 'origins.json');
+  return stateFile(hub, 'origins.json', 'mcp/origins.json');
 }
 
 export function readOrigins(hub: string): Record<string, McpOrigin> {

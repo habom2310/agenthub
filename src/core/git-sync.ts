@@ -9,6 +9,7 @@ import { isScaffoldDefault } from './scaffold.js';
 import { projectCodexSkillManifests } from './linker.js';
 import { projectAll } from './projector.js';
 import { ignoredNames } from './local.js';
+import { OLD_STATE_PATHS } from './state.js';
 import { listSkillCollections } from './skill-check.js';
 
 export interface GitStatusResult {
@@ -39,6 +40,7 @@ export const STANDARD_IGNORE_ENTRIES = [
   '/vendor/',
   '/mcp/origins.json',
   '/local.json',
+  '/approvals.json',
   '/export/',
   '/skills/synced/',
   '/skills/codex-primary-runtime/',
@@ -457,8 +459,14 @@ export function gitPush(
     }
   }
 
+  ensureGitignore(hub); // so the machine-local files untracked below are not staged again
   const untracked = untrackIgnored(hub, [...ignoreMachineSpecificSkills(hub), 'export']);
-  const untrackNote = untracked.length > 0 ? ` Stopped tracking ${untracked.join(', ')} (machine-specific or ignored; the files stay on disk).` : '';
+  // a tracked state file came from the repo: left on disk, untracked, the next run would import it as trusted state
+  const removedState = untrackIgnored(hub, OLD_STATE_PATHS);
+  for (const p of removedState) fs.rmSync(path.join(hub, p), { force: true });
+  const untrackNote =
+    (untracked.length > 0 ? ` Stopped tracking ${untracked.join(', ')} (machine-specific or ignored; the files stay on disk).` : '') +
+    (removedState.length > 0 ? ` Stopped tracking and removed ${removedState.join(', ')} (they came from the repo, so they are not trusted as machine-local state).` : '');
 
   // Stage changes
   const addRes = runGit(['add', '-A'], hub);

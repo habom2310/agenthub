@@ -1,8 +1,10 @@
+import { byCodeUnit } from '../utils/sort.js';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getHomeDir, getHubDir } from './detector.js';
 import { runDoctor, type DoctorResult } from './doctor.js';
-import { hasDeclaredSources, itemLabel, planInstall } from './installer.js';
+import { hasDeclaredSources, itemLabel, modifiedLocally, planInstall } from './installer.js';
 import { isLinkTo, linkSkillsForAllAssistants } from './linker.js';
 import { envVarsOf, probeMcpServers } from './mcp-probe.js';
 import { MCP_PLATFORMS, MCP_PLATFORM_IDS, unsupportedServers, type VarField } from './mcp-platforms.js';
@@ -124,14 +126,24 @@ export function unsupportedItems(home: string, hub: string): DoctorItem[] {
  * the full command line or url (query included), the header names, and every
  * environment variable that would be substituted into it.
  */
+const stableJson = (v: unknown): string =>
+  JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => byCodeUnit(a, b))) : x));
+
 export function probeTargets(home: string, hub: string): string[] {
+  return probeEntries(home, hub).map((e) => e.line);
+}
+
+/** The same lines, with the server each belongs to (approvals are kept per server and line). */
+export function probeEntries(home: string, hub: string): Array<{ name: string; line: string; approvalText: string }> {
   return Object.entries(hubServers(hub, home)).map(([name, cfg]) => {
     const remote = typeof cfg.url === 'string' && !cfg.command;
     const parts = remote
       ? [`connect to ${cfg.url}`, ...(cfg.headers && Object.keys(cfg.headers).length ? [`headers: ${Object.keys(cfg.headers).join(', ')}`] : [])]
       : [[cfg.command, ...(cfg.args ?? [])].filter((x) => x !== undefined).join(' '), ...(cfg.env && Object.keys(cfg.env).length ? [`env: ${Object.keys(cfg.env).join(', ')}`] : [])];
     const vars = envVarsOf(cfg);
-    return `${name}: ${parts.join('; ')}${vars.length ? `; will substitute env: ${vars.join(', ')}` : ''}`;
+    const line = `${name}: ${parts.join('; ')}${vars.length ? `; will substitute env: ${vars.join(', ')}` : ''}`;
+    // an approval covers the whole expanded config (env and header values, cwd, url), not just the shown line
+    return { name, line, approvalText: `${line}  [config sha256:${createHash('sha256').update(stableJson(cfg)).digest('hex')}]` };
   });
 }
 
@@ -294,6 +306,13 @@ export async function sourceItems(hub: string, functional: boolean): Promise<Doc
       items.push({ group: 'sources', name: label, level: 'WARN', message: `${action.reason}, not installed at the declared version (run: agenthub install)` });
     } else if (notLocked) {
       items.push({ group: 'sources', name: label, level: 'WARN', message: 'declared but not in agenthub.lock.json (run: agenthub install)' });
+    } else if (modifiedLocally(hub, d, locked[d.kind][d.name])) {
+      items.push({
+        group: 'sources',
+        name: label,
+        level: 'WARN',
+        message: 'modified locally (differs from the hash in agenthub.lock.json; to restore, delete the folder under vendor/ and run: agenthub install)',
+      });
     } else {
       items.push({ group: 'sources', name: label, level: 'PASS', message: `${d.spec}${pin ? ` @ ${(pinOf(pin) ?? '').slice(0, 12)}` : ''} installed` });
     }
