@@ -4,9 +4,11 @@ import path from 'node:path';
 import childProcess, { spawnSync } from 'node:child_process';
 import { ensureDir, isJunctionOrSymlink, safeWriteFile } from '../utils/fs.js';
 import { getHomeDir, getHubDir } from './detector.js';
-import { finalizeInstall, vendorCheckedOutSkill } from './installer.js';
+import { checkSubpath, copyable, dropLinks, finalizeInstall, vendorCheckedOutSkill } from './installer.js';
 import { linkSkillsForAllAssistants } from './linker.js';
 import { loadManifest, setDeclaredSource } from './manifest.js';
+import { findSkills, selectSkills, type DiscoveredSkill } from './skill-discovery.js';
+import { TREE_REF_HINT, isUrlTarget, parseRemoteTarget, validRef } from './source-url.js';
 import { parseSourceSpec } from './sources.js';
 import { syncMcpServers } from './mcp-sync.js';
 import { projectAll } from './projector.js';
@@ -20,6 +22,8 @@ import {
 export interface AddPackageOptions {
   rulesOnly?: boolean;
   skills?: string[];
+  /** Branch, tag or commit of a remote target */
+  ref?: string;
   homeDir?: string;
   hubDir?: string;
 }
@@ -44,31 +48,33 @@ export function sanitizeIdentifier(raw: string): string {
   );
 }
 
-/**
- * Resolves a package target (local directory or remote git repo) to a local filesystem directory.
- * Returns the resolved directory path, package identifier, and a cleanup callback.
- */
-/** Removes user:password@ from an http(s) URL so it can be recorded safely. */
-function stripUserinfo(target: string): { url: string; removed: boolean } {
-  try {
-    const u = new URL(target);
-    if (!u.username && !u.password) return { url: target, removed: false };
-    u.username = '';
-    u.password = '';
-    return { url: u.toString(), removed: true };
-  } catch {
-    return { url: target, removed: false }; // scp-style git@host:path has no password
-  }
-}
+/** Removes credentials from URLs in an error message. */
+const redactUrls = (text: string): string => text.replace(/(\w+:\/\/)[^@/\s]*@/g, '$1***@');
 
 export interface RemoteInfo {
   /** "github:owner/repo" or "git:<url>", without credentials */
   source: string;
   commit: string;
   warnings: string[];
+  /** Branch, tag or commit the target asked for */
+  ref?: string;
+  /** Folder inside the repo the target pointed at (the returned dir is that folder) */
+  subpath?: string;
+  /** owner/repo@skill: install only this skill */
+  skill?: string;
 }
 
-export function resolvePackageTarget(target: string): {
+function git(args: string[], cwd?: string): ReturnType<typeof childProcess.spawnSync> {
+  return childProcess.spawnSync('git', args, { cwd, encoding: 'utf-8', windowsHide: true });
+}
+
+/**
+ * Resolves a package target (local directory or remote git repo) to a local filesystem directory.
+ * Returns the resolved directory path, package identifier, and a cleanup callback.
+ * Remote targets: owner/repo[@skill] (ref via --ref), GitHub/GitLab/Azure Repos URLs (with ref and
+ * path), or any https/ssh/git URL. For a URL that points into the repo, dir is that folder.
+ */
+export function resolvePackageTarget(target: string, options: { ref?: string } = {}): {
   dir: string;
   identifier: string;
   cleanup: () => void;
@@ -91,39 +97,23 @@ export function resolvePackageTarget(target: string): {
     }
   }
 
-  let url: string;
-  let identifier: string;
-  let source: string;
-  const warnings: string[] = [];
-  const stripped = stripUserinfo(target);
-
-  const ownerRepoMatch = target.match(/^([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)$/);
-  if (ownerRepoMatch) {
-    const owner = ownerRepoMatch[1];
-    const repo = ownerRepoMatch[2];
-    url = `https://github.com/${owner}/${repo}.git`;
-    identifier = sanitizeIdentifier(`${owner}-${repo}`);
-    source = `github:${owner}/${repo}`;
-  } else if (
-    target.startsWith('https://') ||
-    target.startsWith('http://') ||
-    target.startsWith('git@')
-  ) {
-    if (target.includes('#')) throw new Error(`Target URL must not contain "#": ${target.replace(/\/\/[^@/]*@/, '//***@')}`);
-    url = target;
-    const cleanUrl = target.replace(/\/+$/, '').replace(/\.git$/, '');
-    const lastSegment = cleanUrl.split(/[/:]/).pop() || 'package';
-    identifier = sanitizeIdentifier(lastSegment);
-    const gh = target.match(/^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/);
-    source = gh ? `github:${gh[1]}/${gh[2]}` : `git:${stripped.url}`;
-    if (stripped.removed && !gh) {
-      warnings.push('Credentials in the URL were not recorded in agenthub.json; git will need its own credentials on other machines.');
-    }
-  } else {
+  const spec = parseRemoteTarget(target);
+  if (!spec) {
     throw new Error(
       `Target "${target}" is not an existing local directory, GitHub shorthand (owner/repo), or git URL.`
     );
   }
+  if (options.ref !== undefined) {
+    if (!validRef(options.ref)) throw new Error(`Invalid --ref "${options.ref}"`);
+    if (spec.ref !== undefined && spec.ref !== options.ref) throw new Error(`--ref ${options.ref} conflicts with the ref in the URL (${spec.ref})`);
+    spec.ref = options.ref;
+  }
+  const treeHint = (message: string): string => (spec.fromTree ? `${message} (${TREE_REF_HINT})` : message);
+  const url = spec.cloneUrl;
+  const shorthand = spec.source.match(/^github:([\w.-]+)\/([\w.-]+)$/);
+  const identifier = isUrlTarget(target)
+    ? sanitizeIdentifier(url.replace(/\/+$/, '').replace(/\.git$/, '').split(/[/:]/).pop() || 'package')
+    : sanitizeIdentifier(`${shorthand?.[1]}-${shorthand?.[2]}`);
 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenthub-fetch-'));
   let cleanedUp = false;
@@ -136,48 +126,74 @@ export function resolvePackageTarget(target: string): {
       // ignore
     }
   };
-
-  const cloneRes = childProcess.spawnSync('git', ['clone', '--depth', '1', url, tempDir], {
-    encoding: 'utf-8',
-    windowsHide: true,
-  });
-
-  if (cloneRes.error) {
+  const fail = (message: string): never => {
     cleanup();
-    throw new Error(`Git clone failed for ${url}: ${cloneRes.error.message}`);
+    throw new Error(redactUrls(message));
+  };
+
+  const byCommit = spec.ref !== undefined && /^[0-9a-f]{40}$/i.test(spec.ref);
+  const gitFailed = (what: string, res: ReturnType<typeof git>): string =>
+    `${what} failed for ${url}: ${res.error?.message || String(res.stderr || '').trim() || String(res.stdout || '').trim() || `Exit code ${res.status}`}`;
+  if (byCommit) {
+    // shallow fetch of the one commit; some servers refuse that, so fall back to a full fetch
+    const sha = spec.ref as string;
+    git(['init', '-q'], tempDir);
+    let res = git(['fetch', '-q', '--depth', '1', '--', url, sha], tempDir);
+    if (res.error || res.status !== 0) res = git(['fetch', '-q', '--', url, '+refs/heads/*:refs/remotes/origin/*', '+refs/tags/*:refs/tags/*'], tempDir);
+    if (res.error || res.status !== 0) fail(treeHint(gitFailed('Git fetch', res)));
+    const co = git(['checkout', '-q', '--detach', sha], tempDir);
+    if (co.error || co.status !== 0) fail(gitFailed(`Git checkout of ${sha}`, co));
+  } else {
+    const cloneRes = git(['clone', '--depth', '1', ...(spec.ref ? ['--branch', spec.ref] : []), url, tempDir]);
+    if (cloneRes.error || cloneRes.status !== 0) fail(treeHint(gitFailed('Git clone', cloneRes)));
   }
 
-  if (cloneRes.status !== 0) {
+  const headRes = git(['rev-parse', 'HEAD'], tempDir);
+  const commit = headRes.status === 0 ? String(headRes.stdout).trim() : '';
+  if (!/^[0-9a-f]{40}$/.test(commit)) fail(`Could not determine the commit of ${url}`);
+
+  try {
+    dropLinks(tempDir);
+    checkSubpath(tempDir, spec.subpath, url);
+  } catch (err) {
     cleanup();
-    const errMsg =
-      cloneRes.stderr?.trim() || cloneRes.stdout?.trim() || `Exit code ${cloneRes.status}`;
-    throw new Error(`Git clone failed for ${url}: ${errMsg}`);
+    throw new Error(treeHint((err as Error).message));
   }
 
-  const headRes = childProcess.spawnSync('git', ['rev-parse', 'HEAD'], {
-    cwd: tempDir,
-    encoding: 'utf-8',
-    windowsHide: true,
-  });
-  const commit = headRes.status === 0 ? headRes.stdout.trim() : '';
-  if (!/^[0-9a-f]{40}$/.test(commit)) {
-    cleanup();
-    throw new Error(`Could not determine the commit of ${url}`);
-  }
-
+  const remote: RemoteInfo = { source: spec.source, commit, warnings: spec.warnings };
+  if (spec.ref !== undefined) remote.ref = spec.ref;
+  if (spec.subpath !== undefined) remote.subpath = spec.subpath;
+  if (spec.skill !== undefined) remote.skill = spec.skill;
   return {
-    dir: tempDir,
+    dir: spec.subpath ? path.join(tempDir, spec.subpath) : tempDir,
     identifier,
     cleanup,
-    remote: { source, commit, warnings },
+    remote,
   };
+}
+
+/** The skills a target offers (what `agenthub add <target> --list` prints); installs nothing. */
+export function listPackageSkills(target: string, ref?: string): { identifier: string; skills: DiscoveredSkill[]; warnings: string[] } {
+  const { dir, identifier, cleanup, remote } = resolvePackageTarget(target, { ref });
+  try {
+    const found = findSkills(dir, { scanRoot: Boolean(remote?.subpath), rootName: remote && !remote.subpath ? identifier : undefined });
+    // paths as they are in the repo, not relative to the folder a URL pointed at
+    const inRepo = (rel: string): string => [remote?.subpath, rel].filter(Boolean).join('/');
+    return {
+      identifier,
+      skills: found.skills.map((s) => ({ ...s, rel: inRepo(s.rel) })),
+      warnings: [...found.warnings, ...(remote?.warnings ?? [])],
+    };
+  } finally {
+    cleanup();
+  }
 }
 
 /**
  * Inspects a target package without modifying the hub configuration.
  */
-export function packageInfo(target: string): PackageAnalysisReport {
-  const { dir, identifier, cleanup } = resolvePackageTarget(target);
+export function packageInfo(target: string, ref?: string): PackageAnalysisReport {
+  const { dir, identifier, cleanup } = resolvePackageTarget(target, { ref });
   try {
     return analyzePackage(dir, identifier);
   } finally {
@@ -189,7 +205,7 @@ export function packageInfo(target: string): PackageAnalysisReport {
  * Installs a package into the hub, including addon rules, skills, and MCP servers.
  */
 export function packageAdd(target: string, options?: AddPackageOptions): AddPackageResult {
-  const { dir, identifier, cleanup, remote } = resolvePackageTarget(target);
+  const { dir, identifier, cleanup, remote } = resolvePackageTarget(target, { ref: options?.ref });
   try {
     const report = analyzePackage(dir, identifier);
     const hub = options?.hubDir || getHubDir();
@@ -233,21 +249,18 @@ export function packageAdd(target: string, options?: AddPackageOptions): AddPack
 
     // 2. Skills Installation (unless rulesOnly)
     if (!options?.rulesOnly) {
-      const skillsDir = path.join(dir, 'skills');
-      if (fs.existsSync(skillsDir) && fs.statSync(skillsDir).isDirectory()) {
+      const wanted = [...(options?.skills ?? []), ...(remote?.skill ? [remote.skill] : [])];
+      const found = findSkills(dir, { scanRoot: Boolean(remote?.subpath), rootName: remote && !remote.subpath ? identifier : undefined });
+      warnings.push(...found.warnings);
+      const entries = selectSkills(found.skills, wanted);
+      if (entries.length > 0) {
         const hubSkillsDir = path.join(hub, 'skills');
         ensureDir(hubSkillsDir);
-        const entries = fs
-          .readdirSync(skillsDir)
-          .sort()
-          .filter((entry) => fs.statSync(path.join(skillsDir, entry)).isDirectory())
-          .filter((entry) => !options?.skills?.length || options.skills.includes(entry));
-
         // Check every skill before changing anything: names must be valid, a vendored skill is
         // linked into skills/ so it must not shadow a real folder, and a declared skill is not
         // silently replaced by a different kind of source.
         const declared = loadManifest(hub)?.skills ?? {};
-        for (const entry of entries) {
+        for (const { name: entry } of entries) {
           parseSourceSpec('skills', entry, 'local');
           const existing = path.join(hubSkillsDir, entry);
           if (remote && fs.existsSync(existing) && !isJunctionOrSymlink(existing)) {
@@ -264,16 +277,16 @@ export function packageAdd(target: string, options?: AddPackageOptions): AddPack
           }
         }
 
-        for (const entry of entries) {
-          const srcSkill = path.join(skillsDir, entry);
+        for (const { name: entry, dir: srcSkill, rel } of entries) {
           if (remote) {
-            const spec = `${remote.source}#skills/${entry}`;
-            vendorCheckedOutSkill(hub, entry, spec, remote.commit, srcSkill);
+            const sub = [remote.subpath, rel].filter(Boolean).join('/');
+            const source = remote.source + (sub ? `#${sub}` : '');
+            vendorCheckedOutSkill(hub, entry, remote.ref ? { source, ref: remote.ref } : source, remote.commit, srcSkill);
           } else {
             const destSkill = path.join(hubSkillsDir, entry);
             // Re-adding over a vendored skill replaces its link, not the vendored files
             if (isJunctionOrSymlink(destSkill)) fs.unlinkSync(destSkill);
-            fs.cpSync(srcSkill, destSkill, { recursive: true });
+            fs.cpSync(srcSkill, destSkill, { recursive: true, filter: copyable });
             setDeclaredSource(hub, 'skills', entry, 'local');
           }
           installedSkills.push(entry);

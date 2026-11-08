@@ -116,17 +116,22 @@ agenthub add git@github.com:my-team/agent-setup.git              # install from 
 
 **Skills and MCP servers are declared like code dependencies.**
 The hub records where each one comes from (`local`, `github:owner/repo#subpath`, `npm:pkg@range`, `pypi:pkg@range`, or a custom install command) in `agenthub.json`.
-`agenthub.lock.json` pins the exact commit or version.
+`agenthub.lock.json` pins the exact commit or version and a content hash of each vendored skill.
 `agenthub push` commits your own skills and the declarations, never third-party copies.
 Folders an assistant manages itself (Claude's `synced/`, Codex's `.system/`) and links to machine-specific paths are never committed.
-Work-only servers and skills stay on your machine with `agenthub ignore mcp <name>` (a gitignored `local.json`).
+Work-only servers and skills stay on your machine with `agenthub ignore mcp <name>` (a `local.json` kept outside the hub repo).
 A custom source needs only a `check`; `install` is optional, and without it a failing check is a warning that tells you to install the item yourself.
 
 ```bash
 agenthub setup && agenthub git init --remote-url git@github.com:you/my-setup.git
 agenthub pull --yes        # new machine: installs every declared skill and MCP server
 agenthub update            # move the pins forward
+agenthub check             # what is outdated or edited locally? (exit 1 if any, installs nothing)
+agenthub install --frozen-lockfile   # CI: fail instead of changing the lock (default when CI is set)
 ```
+
+`agenthub add` takes `owner/repo`, `owner/repo@skill`, GitHub, GitLab and Azure Repos URLs, or any git URL, with `--ref` for a branch, tag or commit, and `--list` shows the skills a repo offers.
+Commands you approve are remembered on this machine, so a second `install` with the same commands does not ask again (`agenthub approvals`).
 
 See [Skills and MCP Servers as Dependencies](docs/GUIDE.md#7b-skills-and-mcp-servers-as-dependencies) for the schema.
 

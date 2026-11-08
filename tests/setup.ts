@@ -13,6 +13,11 @@ delete process.env.AGENTHUB_HUB;
 // CI forces colour; output assertions expect plain text.
 process.env.NO_COLOR = '1';
 delete process.env.FORCE_COLOR;
+// CI makes install default to a frozen lockfile; tests opt in explicitly.
+delete process.env.CI;
+// machine-local state goes under the throwaway home too
+delete process.env.XDG_STATE_HOME;
+process.env.LOCALAPPDATA = path.join(home, 'AppData', 'Local');
 
 afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });

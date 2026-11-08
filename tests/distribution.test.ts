@@ -4,12 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  listPackageSkills,
   packageAdd,
   packageInfo,
   resolvePackageTarget,
   sanitizeIdentifier,
 } from '../src/core/distribution.js';
 import { setCustomHome } from '../src/core/detector.js';
+import { hashSkill } from '../src/core/hash.js';
 import { initHub } from '../src/core/scaffold.js';
 import { ensureDir, safeWriteFile } from '../src/utils/fs.js';
 
@@ -140,7 +142,8 @@ describe('distribution engine (packageInfo, packageAdd, resolvePackageTarget)', 
       const manifest = JSON.parse(fs.readFileSync(path.join(hubDir, 'agenthub.json'), 'utf-8'));
       expect(manifest.skills).toEqual({ alpha: 'github:alice/pack#skills/alpha' });
       const lock = JSON.parse(fs.readFileSync(path.join(hubDir, 'agenthub.lock.json'), 'utf-8'));
-      expect(lock.skills.alpha).toEqual({ source: 'github:alice/pack#skills/alpha', commit: sha });
+      const vendored = path.join(hubDir, 'vendor', 'skills', 'alpha', 'skills', 'alpha');
+      expect(lock.skills.alpha).toEqual({ source: 'github:alice/pack#skills/alpha', commit: sha, hash: hashSkill(vendored) });
       expect(fs.readFileSync(path.join(hubDir, '.gitignore'), 'utf-8')).toContain('/skills/alpha');
     });
 
@@ -404,6 +407,178 @@ describe('distribution engine (packageInfo, packageAdd, resolvePackageTarget)', 
       expect(result.installedSkills).toEqual(['skill-two']);
       expect(fs.existsSync(path.join(hubDir, 'skills', 'skill-two'))).toBe(true);
       expect(fs.existsSync(path.join(hubDir, 'skills', 'skill-one'))).toBe(false);
+    });
+  });
+
+  describe('more source formats and skill discovery', () => {
+    const sha = 'e'.repeat(40);
+    // a fake clone that lays out the given files and records the git calls
+    const mockClone = (files: Record<string, string>, refuseShallow = false) => {
+      const calls: string[][] = [];
+      vi.spyOn(childProcess, 'spawnSync').mockImplementation((cmd, args, opts) => {
+        calls.push(args as string[]);
+        if (args?.[0] === 'rev-parse') return { status: 0, stdout: `${sha}\n`, stderr: '' } as any;
+        if (refuseShallow && args?.[0] === 'fetch' && args.includes('--depth')) return { status: 128, stdout: '', stderr: 'not our ref' } as any;
+        if (args?.[0] === 'clone' || args?.[0] === 'checkout') {
+          const dest = args[0] === 'clone' ? (args[args.length - 1] as string) : (opts as { cwd: string }).cwd;
+          for (const [rel, content] of Object.entries(files)) safeWriteFile(path.join(dest, rel), content);
+        }
+        return { status: 0, stdout: '', stderr: '' } as any;
+      });
+      return calls;
+    };
+    const manifestSkills = () => JSON.parse(fs.readFileSync(path.join(hubDir, 'agenthub.json'), 'utf-8')).skills;
+    const lockSkills = () => JSON.parse(fs.readFileSync(path.join(hubDir, 'agenthub.lock.json'), 'utf-8')).skills;
+    const repo = { 'skills/alpha/SKILL.md': '# alpha', 'skills/beta/SKILL.md': '# beta' };
+
+    it('owner/repo@skill installs only that skill', () => {
+      mockClone(repo);
+      const res = packageAdd('alice/pack@beta', { homeDir, hubDir });
+      expect(res.installedSkills).toEqual(['beta']);
+      expect(manifestSkills()).toEqual({ beta: 'github:alice/pack#skills/beta' });
+    });
+
+    it('owner/repo@skill fails when the skill does not exist, listing what does', () => {
+      mockClone(repo);
+      expect(() => packageAdd('alice/pack@nope', { homeDir, hubDir })).toThrow('Skill "nope" not found. Available: alpha, beta');
+      expect(fs.existsSync(path.join(hubDir, 'agenthub.lock.json'))).toBe(false);
+    });
+
+    it('--ref clones that ref and records it as the ref field and in the lock source', () => {
+      const calls = mockClone(repo);
+      packageAdd('alice/pack@alpha', { homeDir, hubDir, ref: 'release/1.0' });
+      expect(calls[0]).toEqual(['clone', '--depth', '1', '--branch', 'release/1.0', 'https://github.com/alice/pack.git', expect.any(String)]);
+      expect(manifestSkills()).toEqual({ alpha: { source: 'github:alice/pack#skills/alpha', ref: 'release/1.0' } });
+      expect(lockSkills().alpha).toMatchObject({ source: 'github:alice/pack#skills/alpha ref=release/1.0', commit: sha });
+    });
+
+    it('a commit ref is fetched shallow, then checked out', () => {
+      const calls = mockClone(repo);
+      const ref = 'c'.repeat(40);
+      packageAdd('alice/pack@alpha', { homeDir, hubDir, ref });
+      expect(calls.slice(0, 3)).toEqual([
+        ['init', '-q'],
+        ['fetch', '-q', '--depth', '1', '--', 'https://github.com/alice/pack.git', ref],
+        ['checkout', '-q', '--detach', ref],
+      ]);
+    });
+
+    it('a commit ref falls back to a full fetch when the server refuses a shallow one', () => {
+      const calls = mockClone(repo, true);
+      const ref = 'c'.repeat(40);
+      packageAdd('alice/pack@alpha', { homeDir, hubDir, ref });
+      expect(calls[2].slice(0, 4)).toEqual(['fetch', '-q', '--', 'https://github.com/alice/pack.git']);
+      expect(calls[3]).toEqual(['checkout', '-q', '--detach', ref]);
+    });
+
+    it('a GitHub tree URL gives ref and subpath; the skill is found under it', () => {
+      const calls = mockClone(repo);
+      const res = packageAdd('https://github.com/alice/pack/tree/main/skills/alpha?tab=x', { homeDir, hubDir });
+      expect(calls[0]).toEqual(['clone', '--depth', '1', '--branch', 'main', 'https://github.com/alice/pack.git', expect.any(String)]);
+      expect(res.installedSkills).toEqual(['alpha']);
+      expect(manifestSkills()).toEqual({ alpha: { source: 'github:alice/pack#skills/alpha', ref: 'main' } });
+      expect(fs.readFileSync(path.join(hubDir, 'skills', 'alpha', 'SKILL.md'), 'utf-8')).toBe('# alpha');
+    });
+
+    it('a tree URL to a folder of skills finds the skills below it, with the full subpath', () => {
+      mockClone({ 'packs/x/one/SKILL.md': '# one', 'packs/x/cat/two/SKILL.md': '# two' });
+      const res = packageAdd('https://github.com/alice/pack/tree/dev/packs/x', { homeDir, hubDir });
+      expect([...res.installedSkills].sort()).toEqual(['one', 'two']);
+      expect(manifestSkills().two).toEqual({ source: 'github:alice/pack#packs/x/cat/two', ref: 'dev' });
+    });
+
+    it('a GitLab tree URL is recorded as git: with ref and subpath', () => {
+      const calls = mockClone(repo);
+      packageAdd('https://gitlab.com/grp/sub/pack/-/tree/main/skills/beta', { homeDir, hubDir });
+      expect(calls[0]).toContain('https://gitlab.com/grp/sub/pack.git');
+      expect(manifestSkills()).toEqual({ beta: { source: 'git:https://gitlab.com/grp/sub/pack.git#skills/beta', ref: 'main' } });
+    });
+
+    it('an Azure Repos URL records path and branch without the query', () => {
+      mockClone(repo);
+      packageAdd('https://dev.azure.com/org/proj/_git/pack?path=/skills/alpha&version=GBmain', { homeDir, hubDir });
+      expect(manifestSkills()).toEqual({ alpha: { source: 'git:https://dev.azure.com/org/proj/_git/pack#skills/alpha', ref: 'main' } });
+      expect(fs.readFileSync(path.join(hubDir, 'agenthub.json'), 'utf-8')).not.toContain('?');
+    });
+
+    it('a subpath that does not exist is an error and leaves no temp clone behind', () => {
+      mockClone(repo);
+      expect(() => packageAdd('https://github.com/alice/pack/tree/main/nope', { homeDir, hubDir })).toThrow(/subpath "nope" not found/);
+    });
+
+    it('discovers skills in category folders and from plugin manifests', () => {
+      mockClone({
+        'skills/cat/deep/SKILL.md': '# deep',
+        'extra/ext/SKILL.md': '# ext',
+        '.claude-plugin/plugin.json': JSON.stringify({ skills: ['./extra', '../outside'] }),
+      });
+      const res = packageAdd('alice/pack', { homeDir, hubDir });
+      expect(res.installedSkills).toEqual(['deep', 'ext']);
+      expect(manifestSkills()).toEqual({ deep: 'github:alice/pack#skills/cat/deep', ext: 'github:alice/pack#extra/ext' });
+    });
+
+    it('--ref conflicting with the ref of a tree URL is an error; the same ref is fine', () => {
+      mockClone(repo);
+      expect(() => packageAdd('https://github.com/alice/pack/tree/main/skills/alpha', { homeDir, hubDir, ref: 'dev' })).toThrow(/conflicts/);
+      expect(packageAdd('https://github.com/alice/pack/tree/main/skills/alpha', { homeDir, hubDir, ref: 'main' }).installedSkills).toEqual(['alpha']);
+      expect(() => packageAdd('alice/pack', { homeDir, hubDir, ref: '-x' })).toThrow(/Invalid --ref/);
+    });
+
+    it('a failed clone of a tree URL explains that branch names with a slash are ambiguous', () => {
+      vi.spyOn(childProcess, 'spawnSync').mockReturnValue({ status: 128, stdout: '', stderr: 'fatal: Remote branch feature not found', output: [], pid: 1, signal: null } as any);
+      expect(() => packageAdd('https://github.com/alice/pack/tree/feature/x/skills/a', { homeDir, hubDir })).toThrow(/ambiguous in tree URLs; use the repo URL with --ref/);
+      expect(() => packageAdd('alice/pack', { homeDir, hubDir })).toThrow(/^((?!ambiguous).)*$/s);
+    });
+
+    it('a root SKILL.md without a name is named after the repo, not the temp clone folder', () => {
+      mockClone({ 'SKILL.md': '# unnamed' });
+      const res = packageAdd('alice/whole-thing', { homeDir, hubDir });
+      expect(res.installedSkills).toEqual(['alice-whole-thing']);
+      expect(manifestSkills()).toEqual({ 'alice-whole-thing': 'github:alice/whole-thing' });
+      expect(JSON.stringify(manifestSkills())).not.toContain('agenthub-fetch');
+    });
+
+    it('warns about folders without a SKILL.md and about duplicate names, and --list shows both', () => {
+      mockClone({
+        'skills/a/SKILL.md': '# a',
+        'skills/draft/notes.md': 'no skill here',
+        'skills/cat/empty/readme.md': 'x',
+        '.claude/skills/a/SKILL.md': '# a again',
+      });
+      const res = packageAdd('alice/pack', { homeDir, hubDir });
+      expect(res.installedSkills).toEqual(['a']);
+      expect(res.warnings).toContain('skipped skills/draft: no SKILL.md');
+      expect(res.warnings).toContain('skipped skills/cat: no SKILL.md');
+      expect(res.warnings).toContain('duplicate skill "a": using skills/a, ignoring .claude/skills/a');
+      expect(manifestSkills().a).toBe('github:alice/pack#skills/a');
+
+      const listed = listPackageSkills('alice/pack');
+      expect(listed.warnings).toEqual(expect.arrayContaining(['skipped skills/draft: no SKILL.md', 'duplicate skill "a": using skills/a, ignoring .claude/skills/a']));
+    });
+
+    it('a repo with a root SKILL.md is vendored as one skill without a subpath', () => {
+      mockClone({ 'SKILL.md': '---\nname: whole\n---\n# whole', 'skills/other/SKILL.md': '# other' });
+      const res = packageAdd('alice/whole', { homeDir, hubDir });
+      expect(res.installedSkills).toEqual(['whole']);
+      expect(manifestSkills()).toEqual({ whole: 'github:alice/whole' });
+    });
+
+    it('--list: listPackageSkills reports what it found and installs nothing', () => {
+      mockClone({ ...repo, 'skills/alpha/SKILL.md': '---\nname: alpha\ndescription: Does alpha\n---\n' });
+      const found = listPackageSkills('alice/pack');
+      expect(found.skills.map((s) => [s.name, s.rel, s.description])).toEqual([
+        ['alpha', 'skills/alpha', 'Does alpha'],
+        ['beta', 'skills/beta', undefined],
+      ]);
+      expect(fs.existsSync(path.join(hubDir, 'vendor'))).toBe(false);
+      expect(fs.existsSync(path.join(hubDir, 'agenthub.lock.json'))).toBe(false);
+    });
+
+    it('does not record credentials, queries or the token of a GitLab URL', () => {
+      mockClone(repo);
+      packageAdd('https://oauth2:tok3n@gitlab.com/g/pack/-/tree/main/skills/alpha?ref_type=heads', { homeDir, hubDir });
+      const written = fs.readFileSync(path.join(hubDir, 'agenthub.json'), 'utf-8') + fs.readFileSync(path.join(hubDir, 'agenthub.lock.json'), 'utf-8');
+      expect(written).not.toMatch(/tok3n|oauth2|ref_type/);
     });
   });
 });

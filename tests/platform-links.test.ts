@@ -1,3 +1,4 @@
+import { stateFile } from '../src/core/state.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -127,7 +128,7 @@ describe('uninstall rolls back the new platforms', () => {
     safeWriteFile(path.join(hub, 'mcp', 'servers.json'), JSON.stringify({ mcpServers: { mine: { command: 'mine' } } }));
     syncMcpServers(home, hub);
     expect(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf-8')).toContain('mine');
-    expect(JSON.parse(fs.readFileSync(path.join(hub, 'mcp', 'origins.json'), 'utf-8')).theirs.from).toEqual(['codex']);
+    expect(JSON.parse(fs.readFileSync(stateFile(hub, 'origins.json', 'mcp/origins.json'), 'utf-8')).theirs.from).toEqual(['codex']);
 
     // the user edits one of the copies agenthub wrote
     const cursor = JSON.parse(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf-8'));
@@ -193,7 +194,7 @@ describe('uninstall rolls back the new platforms', () => {
     safeWriteFile(path.join(home, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { same: { command: 'same' } } }));
     safeWriteFile(path.join(hub, 'mcp', 'servers.json'), JSON.stringify({ mcpServers: { same: { command: 'same' } } }));
     syncMcpServers(home, hub);
-    const origins = JSON.parse(fs.readFileSync(path.join(hub, 'mcp', 'origins.json'), 'utf-8'));
+    const origins = JSON.parse(fs.readFileSync(stateFile(hub, 'origins.json', 'mcp/origins.json'), 'utf-8'));
     expect(origins.same).toEqual({ from: [], to: ['copilot'], pre: ['cursor'] });
 
     const res = uninstallHub({ home, hub });
@@ -207,7 +208,7 @@ describe('uninstall rolls back the new platforms', () => {
     safeWriteFile(path.join(home, '.cursor', 'mcp.json'), '{ broken');
     safeWriteFile(path.join(hub, 'mcp', 'servers.json'), JSON.stringify({ mcpServers: { a: { command: 'a' } } }));
     syncMcpServers(home, hub);
-    const origins = JSON.parse(fs.readFileSync(path.join(hub, 'mcp', 'origins.json'), 'utf-8'));
+    const origins = JSON.parse(fs.readFileSync(stateFile(hub, 'origins.json', 'mcp/origins.json'), 'utf-8'));
     expect(origins.a.to).toEqual(['copilot']);
   });
 });
