@@ -205,6 +205,20 @@ describe('~/.agents/skills, the cross-agent skills folder', () => {
       expect(fs.realpathSync(path.join(hub, 'skills', 'bar'))).toBe(fs.realpathSync(tool));
     });
 
+    it('Claude only: a link into a real ~/.agents/skills stays a link, so `npx skills update` still reaches Claude', () => {
+      mkdirs('.claude');
+      skill(agents(), 'x');
+      createJunction(path.join(agents(), 'x'), path.join(home, '.claude', 'skills', 'x'));
+      linkSkillsForAllAssistants({ homeDir: home, hubDir: hub });
+      expect(isJunctionOrSymlink(agents())).toBe(false);
+      const x = path.join(hub, 'skills', 'x');
+      expect(isJunctionOrSymlink(x)).toBe(true);
+      expect(fs.realpathSync(x)).toBe(fs.realpathSync(path.join(agents(), 'x')));
+      // what `npx skills update` does: Claude sees the new version
+      fs.writeFileSync(path.join(agents(), 'x', 'SKILL.md'), '---\nname: x\ndescription: v2\n---\n');
+      expect(fs.readFileSync(path.join(home, '.claude', 'skills', 'x', 'SKILL.md'), 'utf-8')).toContain('v2');
+    });
+
     it('removes a hub entry that resolves to itself and says so', () => {
       mkdirs('.claude');
       ensureDir(path.join(hub, 'skills'));
@@ -242,6 +256,7 @@ describe('~/.agents/skills, the cross-agent skills folder', () => {
 
   it('a lock name that is not a plain folder name never reaches .git/info/exclude', () => {
     mkdirs('.codex');
+    createJunction(path.join(hub, 'skills'), agents()); // `npx skills` writes into the hub
     safeWriteFile(path.join(home, '.agents', '.skill-lock.json'), JSON.stringify({ version: 3, skills: { '!x\n/*': {}, 'ok': {} } }));
     skill(path.join(hub, 'skills'), 'ok');
     gitInitHub(hub);
@@ -249,7 +264,44 @@ describe('~/.agents/skills, the cross-agent skills folder', () => {
     expect(fs.readFileSync(path.join(hub, '.git', 'info', 'exclude'), 'utf-8')).not.toContain('!x');
   });
 
+  it("a hub skill that only shares its name with a lock entry is the hub's own and stays in git", () => {
+    mkdirs('.claude');
+    safeWriteFile(path.join(home, '.agents', '.skill-lock.json'), JSON.stringify({ version: 3, skills: { pdf: { sourceType: 'github', source: 'a/b' } } }));
+    skill(path.join(hub, 'skills'), 'pdf');
+    gitInitHub(hub);
+    expect(ignoreMachineSpecificSkills(hub)).toEqual([]);
+    expect(skillItems(home, hub).some((i) => i.name === 'npx skills copies')).toBe(false);
+    // the same folder migrated unchanged from ~/.agents/skills is the `npx skills` copy, and doctor says so
+    skill(path.join(home, '.agents', 'skills.old'), 'pdf');
+    expect(ignoreMachineSpecificSkills(hub)).toEqual(['skills/pdf']);
+    expect(skillItems(home, hub).find((i) => i.name === 'npx skills copies')?.message).toContain('pdf');
+    // a different hub folder of that name is the user's own
+    fs.appendFileSync(path.join(hub, 'skills', 'pdf', 'SKILL.md'), 'mine\n');
+    expect(ignoreMachineSpecificSkills(hub)).toEqual([]);
+  });
+
   describe('skills.old is restored only where agenthub removed a link', () => {
+    it('an old Codex hub link gets back only what the hub lacks, so no skill is listed twice', () => {
+      mkdirs('.codex');
+      // an older agenthub linked ~/.codex/skills to the hub after migrating y into it
+      skill(path.join(hub, 'skills'), 'y');
+      skill(path.join(home, '.codex', 'skills.old'), 'y');
+      ensureDir(path.join(home, '.codex', 'skills.old', '.system'));
+      createJunction(path.join(hub, 'skills'), path.join(home, '.codex', 'skills'));
+      linkSkillsForAllAssistants({ homeDir: home, hubDir: hub });
+
+      const own = path.join(home, '.codex', 'skills');
+      expect(isJunctionOrSymlink(own)).toBe(false);
+      expect(fs.existsSync(path.join(own, '.system'))).toBe(true);
+      expect(fs.existsSync(path.join(own, 'y'))).toBe(false);
+      expect(fs.existsSync(path.join(home, '.codex', 'skills.old', 'y', 'SKILL.md'))).toBe(true);
+      expect(skillItems(home, hub).filter((i) => i.name.startsWith('Codex duplicate '))).toEqual([]);
+      // Codex still loads its own folder, so doctor sees a copy left there
+      skill(own, 'y');
+      expect(skillItems(home, hub).some((i) => i.level === 'WARN' && i.name === 'Codex duplicate y')).toBe(true);
+    });
+
+
     it('a stale skills.old next to a real folder or a missing one is left alone', () => {
       mkdirs('.claude', '.codex', '.cursor');
       ensureDir(path.join(home, '.codex', 'skills', '.system'));

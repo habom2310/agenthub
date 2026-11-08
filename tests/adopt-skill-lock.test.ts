@@ -1,9 +1,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runAdopt, scanAdoptable, type AdoptItem } from '../src/core/adopt.js';
+import { hashSkill } from '../src/core/hash.js';
+import { planInstall, runInstall } from '../src/core/installer.js';
 import { loadManifest } from '../src/core/manifest.js';
+import { loadLock, runtime } from '../src/core/sources.js';
 import { ensureDir, safeWriteFile } from '../src/utils/fs.js';
 
 describe('adopt: skills installed with `npx skills` (~/.agents/.skill-lock.json)', () => {
@@ -25,6 +28,9 @@ describe('adopt: skills installed with `npx skills` (~/.agents/.skill-lock.json)
     safeWriteFile(lockFile(), JSON.stringify({ version: 3, skills, ...extra }));
   // the way `npx skills` leaves them: real folders in ~/.agents/skills
   const install = (...names: string[]) => names.forEach((n) => safeWriteFile(path.join(home, '.agents', 'skills', n, 'SKILL.md'), skillMd(n)));
+  // the way linking ~/.agents/skills leaves them: in the hub, the originals kept in skills.old
+  const migrated = (...names: string[]) =>
+    names.forEach((n) => [path.join(hub, 'skills'), path.join(home, '.agents', 'skills.old')].forEach((d) => safeWriteFile(path.join(d, n, 'SKILL.md'), skillMd(n))));
   const find = (items: AdoptItem[], name: string) => items.find((i) => i.kind === 'skills' && i.name === name) as AdoptItem;
 
   beforeEach(() => {
@@ -38,7 +44,7 @@ describe('adopt: skills installed with `npx skills` (~/.agents/.skill-lock.json)
   afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
   it('proposes github:owner/repo#dir, confidently, from a github entry', () => {
-    install('review');
+    migrated('review');
     writeLock({ review: entry({ skillPath: 'skills/review/SKILL.md' }) });
     const item = find(scanAdoptable(home, hub), 'review');
     expect(item.proposal).toMatchObject({ label: 'github:acme/skills#skills/review', spec: 'github:acme/skills#skills/review', confident: true });
@@ -49,7 +55,7 @@ describe('adopt: skills installed with `npx skills` (~/.agents/.skill-lock.json)
   });
 
   it('carries the ref, and declares the repository root for a SKILL.md at the top', () => {
-    install('root', 'pinned');
+    migrated('root', 'pinned');
     writeLock({
       root: entry({ skillPath: 'SKILL.md' }),
       pinned: entry({ skillPath: 'a/b/SKILL.md', ref: 'v1.2.0' }),
@@ -183,10 +189,13 @@ describe('adopt: skills installed with `npx skills` (~/.agents/.skill-lock.json)
       expect(p?.note).toContain('no copy from ~/.agents/skills is left to compare it with');
     });
 
-    it('compares against ~/.agents/skills/<name> before the migration', () => {
+    it('is not confident before the migration: the live ~/.agents/skills/<name> cannot be compared with itself', () => {
       install('review');
+      fs.appendFileSync(path.join(home, '.agents', 'skills', 'review', 'SKILL.md'), 'local edit\n');
       writeLock({ review: entry({ skillPath: 'skills/review/SKILL.md' }) });
-      expect(find(scanAdoptable(home, hub), 'review').proposal?.confident).toBe(true);
+      const p = find(scanAdoptable(home, hub), 'review').proposal;
+      expect(p?.confident).toBe(false);
+      expect(p?.note).toContain('local edits to it cannot be detected');
     });
 
     it('--yes does not declare a differing skill', async () => {
@@ -197,6 +206,31 @@ describe('adopt: skills installed with `npx skills` (~/.agents/.skill-lock.json)
       expect(report.applied).toEqual([]);
       expect(fs.existsSync(path.join(hub, 'skills', 'review', 'SKILL.md'))).toBe(true);
     });
+  });
+
+  it('an adopted skill gets a content hash in agenthub.lock.json and verifies under a frozen lock', async () => {
+    safeWriteFile(path.join(hub, 'skills', 'review', 'SKILL.md'), skillMd('review'));
+    safeWriteFile(path.join(home, '.agents', 'skills.old', 'review', 'SKILL.md'), skillMd('review'));
+    writeLock({ review: entry({ skillPath: 'skills/review/SKILL.md' }) });
+    expect((await runAdopt({ homeDir: home, hubDir: hub, yes: true })).applied.map((a) => a.item)).toContain('skill review');
+
+    // fake git: the pinned checkout holds the skill
+    vi.spyOn(runtime, 'spawn').mockImplementation((cmd, args, cwd) => {
+      if (cmd === 'git' && args[0] === 'ls-remote') return { status: 0, stdout: `${'a'.repeat(40)}\tHEAD\n`, stderr: '' };
+      if (cmd === 'git' && args[0] === 'checkout') safeWriteFile(path.join(cwd as string, 'skills', 'review', 'SKILL.md'), skillMd('review'));
+      return { status: 0, stdout: '', stderr: '' };
+    });
+    try {
+      const result = runInstall(await planInstall(hub));
+      expect(result.failed).toEqual([]);
+      const pin = loadLock(hub).skills.review;
+      expect(pin?.hash).toBe(hashSkill(path.join(hub, 'vendor', 'skills', 'review', 'skills', 'review')));
+      const frozen = await planInstall(hub, { frozen: true });
+      expect(frozen.errors).toEqual([]);
+      expect(frozen.actions).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it('dry-run reads the lock and changes nothing', async () => {

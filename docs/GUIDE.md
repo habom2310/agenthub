@@ -33,11 +33,13 @@ A `pi` binary on your `PATH` alone is only reported by `agenthub detect`: `pi` i
 `~/.agents/skills` is always linked before any other skills folder, by `link`, `doctor --fix`, `connect` and `setup` alike.
 A real `~/.agents/skills` folder is copied into the hub first and renamed to `skills.old`, like any other skills folder.
 That moves skills installed with `npx skills` into the hub, so `npx skills update` and `npx skills remove` now write there.
-agenthub says so, and until you run `agenthub adopt` to declare where they came from, the skills named in `~/.agents/.skill-lock.json` stay out of git (listed in the machine-local `.git/info/exclude` section).
+agenthub says so, and until you run `agenthub adopt` to declare where they came from, the skills named in `~/.agents/.skill-lock.json` stay out of git (listed in the machine-local `.git/info/exclude` section, and reported by `doctor --full`).
+That applies only to the `npx skills` copies: hub folders while `~/.agents/skills` links to the hub, or folders still identical to `~/.agents/skills.old/<name>`. A hub skill of your own that only shares its name with a lock entry is committed as usual.
 When an assistant folder holds links into `~/.agents/skills` (the `npx skills` layout, `~/.claude/skills/foo` pointing at `~/.agents/skills/foo`), the content is copied into the hub rather than the link, so nothing loops.
+That happens only when `~/.agents/skills` is about to be linked (Codex or Pi is detected) or already is: with Claude alone, `~/.agents/skills` stays the `npx skills` folder and the hub keeps the link, so `npx skills update` still reaches Claude.
 Links to anywhere else, such as a tool-managed folder, stay links.
 Codex's own `~/.codex/skills` (with its `.system` folder) is never touched.
-If an older agenthub linked it to the hub, the link is removed and `skills.old` is restored.
+If an older agenthub linked it to the hub, the link is removed and `skills.old` is restored, except the skills already in the hub (Codex loads those through `~/.agents/skills`; they stay in `skills.old` so nothing is listed twice). `doctor --full` still checks `~/.codex/skills` for duplicates.
 Cursor, Windsurf and Copilot CLI also load `~/.agents/skills`, and Cursor loads `~/.claude/skills` and `~/.codex/skills` too ([Cursor docs](https://cursor.com/docs/skills)).
 Linking all of them would list every skill twice, so agenthub skips the own link of an assistant while another folder it loads already provides the hub skills, and removes an earlier hub link there.
 A real skills folder of such an assistant is left alone.
@@ -261,7 +263,7 @@ It scans every detected assistant's skills folders and MCP configs (and `skills/
 | Found | Proposed source |
 |---|---|
 | Skill (link or folder) inside a git checkout with a remote | `github:owner/repo#subpath`, or `git:<url>#subpath`, credentials removed, pinned to the checkout's commit (`ref`). The commit and the remote's last fetched HEAD are read from `.git` files; git is never run. It is confident only when both are the same commit. Local edits are not checked. |
-| Skill named in the `npx skills` lockfile (`~/.agents/.skill-lock.json`) with a `github`, `gitlab` or `git` source | `github:owner/repo#<folder of skillPath>` (or `git:<url>#<folder>`), with the lock's `ref` when it has one, credentials removed. Confident only when the lock names the folder and the hub copy has the same content as the one `npx skills` installed (`~/.agents/skills.old/<name>`, or `~/.agents/skills/<name>` before the move); otherwise the note says the content differs. The lock is read as untrusted data: a malformed entry is skipped. The skill may still be managed by `npx skills update`; agenthub vendors its own pinned copy |
+| Skill named in the `npx skills` lockfile (`~/.agents/.skill-lock.json`) with a `github`, `gitlab` or `git` source | `github:owner/repo#<folder of skillPath>` (or `git:<url>#<folder>`), with the lock's `ref` when it has one, credentials removed. Confident only when the lock names the folder and the hub copy has the same content as the one `npx skills` installed (`~/.agents/skills.old/<name>`); otherwise the note says the content differs. Before the move, `~/.agents/skills/<name>` is the live copy and cannot be compared with itself, so it is not confident. The lock is read as untrusted data: a malformed entry is skipped. The skill may still be managed by `npx skills update`; agenthub vendors its own pinned copy |
 | Skill linked into a tool-managed folder such as `~/.local/share/<tool>/skills/...` | `custom` with `check: test -f <path>/SKILL.md` and `path`; add an `install` command, or leave it check-only |
 | Top-level `skills/` folder with nested skills, or a dot-directory (`synced/`, `.system/`) | skipped: an assistant manages it (see [Git](#7b-skills-and-mcp-servers-as-dependencies)) |
 | Plain skill folder, no git | self-built (moved into `skills/` as `local`) or a source you enter |

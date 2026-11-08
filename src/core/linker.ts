@@ -187,18 +187,27 @@ export function linkSkillsViaAgentsDir(id: 'codex' | 'pi', homeDir?: string, hub
 }
 
 /**
- * Removes `dir` when it links to the hub skills. With restoreOld, the skills.old that linking
- * left there comes back, but only in this same call and only into the place just freed.
+ * Removes `dir` when it links to the hub skills. With restoreOld, the entries of the skills.old
+ * that linking left there come back into the place just freed, except skills the hub already has
+ * (they were migrated, and the assistant still loads them through ~/.agents/skills). Those stay in
+ * skills.old, which is removed once empty. Dot-folders (Codex's own .system) always come back.
  */
 function releaseHubLink(dir: string, hub: string, restoreOld: boolean): void {
-  if (!isLinkTo(dir, path.join(hub, 'skills'))) return;
+  const hubSkills = path.join(hub, 'skills');
+  if (!isLinkTo(dir, hubSkills)) return;
   try {
     fs.unlinkSync(dir);
   } catch {
-    fs.rmSync(dir, { recursive: true, force: true });
+    // rmdir removes a junction or directory link without following it; never rm -r through it
+    fs.rmdirSync(dir);
   }
   const old = path.join(path.dirname(dir), 'skills.old');
-  if (restoreOld && isRealDir(old) && !exists(dir)) fs.renameSync(old, dir);
+  if (!restoreOld || !isRealDir(old) || exists(dir)) return;
+  fs.mkdirSync(dir);
+  for (const entry of fs.readdirSync(old)) {
+    if (entry.startsWith('.') || !exists(path.join(hubSkills, entry))) fs.renameSync(path.join(old, entry), path.join(dir, entry));
+  }
+  if (fs.readdirSync(old).length === 0) fs.rmdirSync(old);
 }
 
 /** lstat-based: a dangling link counts as there. */
@@ -333,11 +342,17 @@ const realOrNull = (p: string): string | null => {
   }
 };
 
-/** The skills folders agenthub links or reads: a link into one of them is content agenthub manages. */
-function managedSkillRoots(home: string, hubSkills: string): string[] {
-  const roots = [hubSkills, agentsSkillsDir(home), path.join(windsurfDirFor(home), 'skills')];
+/**
+ * The skills folders agenthub links or reads: a link into one of them is content agenthub manages.
+ * ~/.agents/skills counts only when it is (or is about to be) linked to the hub: otherwise `npx skills`
+ * keeps updating it, so a link into it must stay a link.
+ */
+function managedSkillRoots(home: string, hubSkills: string, skillsDir: string): string[] {
+  const agents = path.resolve(agentsSkillsDir(home));
+  const agentsManaged = path.resolve(skillsDir) === agents || needsAgentsSkillsLink(home) || isLinkTo(agents, hubSkills);
+  const roots = [hubSkills, agents, path.join(windsurfDirFor(home), 'skills')];
   for (const p of SKILL_PLATFORMS) roots.push(p.skillsDir(home), ...p.alsoReads(home));
-  return roots.map((r) => realOrNull(r) ?? path.resolve(r));
+  return roots.filter((r) => agentsManaged || path.resolve(r) !== agents).map((r) => realOrNull(r) ?? path.resolve(r));
 }
 
 /**
@@ -361,7 +376,7 @@ function linkSkillsDir(skillsDir: string, hub: string, label: string, home: stri
 
   if (lstat && !lstat.isSymbolicLink() && lstat.isDirectory()) {
     try {
-      const managed = managedSkillRoots(home, hubSkills);
+      const managed = managedSkillRoots(home, hubSkills, skillsDir);
       const moving = realOrNull(skillsDir) ?? skillsDir;
       for (const entry of fs.readdirSync(skillsDir)) {
         if (entry.endsWith('.old')) continue; // backups, such as the <name>.old that adopt leaves

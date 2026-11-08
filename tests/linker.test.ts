@@ -255,7 +255,7 @@ describe('linker', () => {
       expect(fs.existsSync(path.join(hubDir, 'skills', 'codex-skill', 'agents', 'openai.yaml'))).toBe(true);
     });
 
-    it('removes a hub link left in ~/.codex/skills by an older agenthub and restores skills.old', () => {
+    it('removes a hub link left in ~/.codex/skills by an older agenthub and restores what the hub lacks from skills.old', () => {
       const codexDir = path.join(homeDir, '.codex');
       safeWriteFile(path.join(codexDir, 'skills', '.system', 'sys', 'SKILL.md'), '# system');
       safeWriteFile(path.join(codexDir, 'skills', 'mine', 'SKILL.md'), '# mine');
@@ -268,7 +268,9 @@ describe('linker', () => {
 
       expect(isJunctionOrSymlink(path.join(codexDir, 'skills'))).toBe(false);
       expect(fs.existsSync(path.join(codexDir, 'skills', '.system', 'sys', 'SKILL.md'))).toBe(true);
-      expect(fs.existsSync(path.join(codexDir, 'skills.old'))).toBe(false);
+      // mine is in the hub, which Codex loads through ~/.agents/skills: restoring it would list it twice
+      expect(fs.existsSync(path.join(codexDir, 'skills', 'mine'))).toBe(false);
+      expect(fs.existsSync(path.join(codexDir, 'skills.old', 'mine', 'SKILL.md'))).toBe(true);
       expect(isJunctionOrSymlink(path.join(homeDir, '.agents', 'skills'))).toBe(true);
     });
 

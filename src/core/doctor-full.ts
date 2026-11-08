@@ -19,6 +19,7 @@ import {
   type CheckLevel,
 } from './skill-check.js';
 import { ignoredNames, readIgnored } from './local.js';
+import { npxSkillCopies } from './git-sync.js';
 import { loadDeclaredSources, loadLock, pinOf, runtime } from './sources.js';
 
 export type DoctorGroup = 'setup' | 'skills' | 'sources' | 'mcp';
@@ -217,6 +218,16 @@ export function skillItems(home: string, hub: string): DoctorItem[] {
       name: skillName(entry),
       level: worst(issues.map((i) => i.level)),
       message: issues.length === 0 ? 'SKILL.md valid' : issues.map((i) => i.message).join('; '),
+    });
+  }
+
+  const npx = npxSkillCopies(hub, home);
+  if (npx.length > 0) {
+    items.push({
+      group: 'skills',
+      name: 'npx skills copies',
+      level: 'INFO',
+      message: `${npx.join(', ')} came from \`npx skills\` and are kept out of git until declared (run: agenthub adopt)`,
     });
   }
 

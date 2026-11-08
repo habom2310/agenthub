@@ -345,10 +345,16 @@ function skillProposal(seen: SkillSeen[], home: string, hub: string, lock: Map<s
     const baseline = [path.join(home, '.agents', 'skills.old', first.name), path.join(home, '.agents', 'skills', first.name)].find(
       (d) => fs.existsSync(path.join(d, 'SKILL.md')) && !isWithin(hubSkills, realOf(d) ?? d)
     );
+    // before the migration the baseline is the live folder itself: comparing it with itself proves nothing
+    const live = baseline !== undefined && realOf(baseline) === real;
     const have = skillContentHash(real);
-    const same = baseline !== undefined && have !== null && have === skillContentHash(baseline);
+    const same = baseline !== undefined && !live && have !== null && have === skillContentHash(baseline);
     const lockNote = `a skill named ${first.name} exists in the npx skills lock but ${
-      baseline === undefined ? 'no copy from ~/.agents/skills is left to compare it with' : `its content differs from ${tilde(baseline, home)}`
+      baseline === undefined
+        ? 'no copy from ~/.agents/skills is left to compare it with'
+        : live
+          ? `${tilde(baseline, home)} is the copy npx skills manages, so local edits to it cannot be detected`
+          : `its content differs from ${tilde(baseline, home)}`
     }`;
     return {
       proposal: {

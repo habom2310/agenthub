@@ -140,13 +140,14 @@ export interface SkillRoots {
  */
 export function assistantSkillRoots(home: string, geminiHubPaths: string[] = []): SkillRoots[] {
   const out: SkillRoots[] = SKILL_PLATFORMS.filter((p) => p.detected(home)).map((p) => {
-    // an assistant that gets the hub through ~/.agents/skills does not link its own folder
+    // an assistant that gets the hub through ~/.agents/skills does not link its own folder,
+    // but still loads it, so it stays in roots for the duplicate check
     const viaAgentsDir = !p.linksOwnDir && isJunctionOrSymlink(agentsSkillsDir(home));
     return {
       id: p.id,
       label: p.label,
       // the assistant's own folder first, then the others it also loads
-      roots: viaAgentsDir ? p.alsoReads(home) : [p.skillsDir(home), ...p.alsoReads(home)],
+      roots: [p.skillsDir(home), ...p.alsoReads(home)],
       linked: viaAgentsDir ? undefined : p.skillsDir(home),
     };
   });
