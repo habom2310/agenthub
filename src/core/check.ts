@@ -37,7 +37,10 @@ export async function checkSources(hubDir?: string): Promise<CheckResult> {
     const prev = lock[decl.kind][decl.name];
     try {
       if (isLocalBuild(decl)) {
-        if (!fs.existsSync(path.join(hub, 'mcp', 'servers', decl.name))) continue;
+        if (!fs.existsSync(path.join(hub, 'mcp', 'servers', decl.name))) {
+          findings.push({ item, status: 'error', message: `declared "local" but mcp/servers/${decl.name}/ does not exist` });
+          continue;
+        }
         const now = localBuildHash(hub, decl.name);
         findings.push(
           prev?.hash === now

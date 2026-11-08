@@ -203,6 +203,13 @@ describe('lockfile hashes, check and frozen lockfile', () => {
       expect(await hashOf()).toBe(crlf);
     });
 
+    it('check reports a declared local build whose folder is missing', async () => {
+      manifest({ mcp: { m: { source: 'local', build: 'make' } } });
+      const { findings, dirty } = await checkSources(hub);
+      expect(dirty).toBe(true);
+      expect(findings.find((f) => f.item.endsWith(' m'))).toMatchObject({ status: 'error', message: expect.stringContaining('mcp/servers/m/ does not exist') });
+    });
+
     it('a local build in git that writes dist/ and node_modules/ is current on the next run', async () => {
       manifest({ mcp: { m: { source: 'local', build: 'node build.js' } } });
       write(path.join(hub, 'mcp', 'servers.json'), JSON.stringify({ mcpServers: { m: { command: 'node', args: ['x'] } } }));
