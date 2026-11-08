@@ -622,7 +622,8 @@ export function buildCli(): Command {
       applyHomeOverride(options);
       const res = linkSkillsForAllAssistants();
       const results = [res.agents, res.claude, res.gemini, res.codex, res.cursor, res.windsurf, res.copilot, res.pi].filter((r) => r !== undefined);
-      for (const r of results) console.log(r.success ? pc.green(`✓ ${r.message}`) : pc.red(`✗ ${r.message}`));      if (results.some((r) => !r.success)) process.exitCode = 1;
+      for (const r of results) console.log(r.success ? pc.green(`✓ ${r.message}`) : pc.red(`✗ ${r.message}`));
+      if (results.some((r) => !r.success)) process.exitCode = 1;
     });
 
   // 5. project

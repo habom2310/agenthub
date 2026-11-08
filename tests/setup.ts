@@ -19,10 +19,11 @@ delete process.env.CI;
 delete process.env.XDG_STATE_HOME;
 process.env.LOCALAPPDATA = path.join(home, 'AppData', 'Local');
 
-// A `pi` binary on the developer's PATH would make every temp home look like it has Pi installed.
+// A `pi` or `copilot` binary on the developer's PATH would make every temp home look like it has Pi or Copilot installed.
+const DETECTED_BINARIES = ['pi', 'copilot'].flatMap((b) => [b, `${b}.cmd`, `${b}.exe`, `${b}.bat`]);
 process.env.PATH = (process.env.PATH ?? '')
   .split(path.delimiter)
-  .filter((dir) => !['pi', 'pi.cmd', 'pi.exe', 'pi.bat'].some((n) => fs.existsSync(path.join(dir, n))))
+  .filter((dir) => !DETECTED_BINARIES.some((n) => fs.existsSync(path.join(dir, n))))
   .join(path.delimiter);
 
 afterAll(() => {

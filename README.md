@@ -136,7 +136,7 @@ Commands you approve are remembered on this machine, so a second `install` with 
 See [Skills and MCP Servers as Dependencies](docs/GUIDE.md#7b-skills-and-mcp-servers-as-dependencies) for the schema.
 
 **All seven assistants get your skills and MCP servers.**
-Skills are linked into Claude and into `~/.agents/skills`, the cross-agent folder that Codex, Pi, Cursor, Windsurf and Copilot CLI read, so no assistant lists a skill twice (Windsurf and Copilot CLI keep their own folder when `~/.agents/skills` is not linked).
+Skills are linked into Claude and, when Codex or Pi is installed, into `~/.agents/skills`, the cross-agent folder that Codex, Pi, Cursor, Windsurf and Copilot CLI read, so no assistant lists a skill twice (Windsurf and Copilot CLI keep their own folder when `~/.agents/skills` is not linked).
 `agenthub adopt` also reads the `npx skills` lockfile to find where those skills came from.
 MCP servers are written in each assistant's own format, including Codex's `config.toml`, without disturbing the rest of the file.
 
