@@ -275,7 +275,30 @@ describe.skipIf(process.platform === 'win32')('remembered approvals in the insta
     expect(fs.existsSync(stateFile(hub, 'approvals.json'))).toBe(true);
   });
 
-  it('push untracks approvals.json, local.json and mcp/origins.json that a repo carries, keeping the files', async () => {
+  it('a repo-authored approvals.json does not become trusted after push untracks it', async () => {
+    const entries = [`test -f "${marker}"`, `touch "${marker}"`].map((command, i) => ({
+      kind: 'mcp', item: 'c', role: i === 0 ? 'check' : 'install', sha256: commandHash(command), command,
+    }));
+    const bare = path.join(tmp, 'remote.git');
+    git(tmp, 'init', '-q', '--bare', '-b', 'main', bare);
+    write(treeFile(), JSON.stringify({ version: 1, approved: entries }));
+    git(hub, 'init', '-q', '-b', 'main');
+    git(hub, 'add', '-f', '-A');
+    git(hub, 'commit', '-q', '-m', 'from the remote author');
+    git(hub, 'remote', 'add', 'origin', bare);
+    await runCli(['-H', home, 'push']);
+    expect(fs.existsSync(treeFile())).toBe(false);
+
+    logs.length = 0;
+    process.exitCode = undefined;
+    await runCli(['-H', home, 'install']);
+    expect(out()).toContain('pending (no TTY, re-run with --yes)');
+    expect(out()).not.toContain('approved before');
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(loadApprovals(hub)).toEqual([]);
+  });
+
+  it('push untracks approvals.json, local.json and mcp/origins.json that a repo carries, and removes them', async () => {
     const bare = path.join(tmp, 'remote.git');
     git(tmp, 'init', '-q', '--bare', '-b', 'main', bare);
     write(treeFile(), '{"version":1,"approved":[]}');
@@ -290,7 +313,7 @@ describe.skipIf(process.platform === 'win32')('remembered approvals in the insta
     expect(tracked).not.toContain('approvals.json');
     expect(tracked).not.toContain('local.json');
     expect(tracked).not.toContain('mcp/origins.json');
-    expect(fs.existsSync(treeFile())).toBe(true);
+    for (const rel of ['approvals.json', 'local.json', 'mcp/origins.json']) expect(fs.existsSync(path.join(hub, rel))).toBe(false);
   });
 
   it('changed sources under an unchanged build string ask again', async () => {

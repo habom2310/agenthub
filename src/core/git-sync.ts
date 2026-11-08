@@ -455,8 +455,13 @@ export function gitPush(
   }
 
   ensureGitignore(hub); // so the machine-local files untracked below are not staged again
-  const untracked = untrackIgnored(hub, [...ignoreMachineSpecificSkills(hub), 'export', ...OLD_STATE_PATHS]);
-  const untrackNote = untracked.length > 0 ? ` Stopped tracking ${untracked.join(', ')} (machine-specific or ignored; the files stay on disk).` : '';
+  const untracked = untrackIgnored(hub, [...ignoreMachineSpecificSkills(hub), 'export']);
+  // a tracked state file came from the repo: left on disk, untracked, the next run would import it as trusted state
+  const removedState = untrackIgnored(hub, OLD_STATE_PATHS);
+  for (const p of removedState) fs.rmSync(path.join(hub, p), { force: true });
+  const untrackNote =
+    (untracked.length > 0 ? ` Stopped tracking ${untracked.join(', ')} (machine-specific or ignored; the files stay on disk).` : '') +
+    (removedState.length > 0 ? ` Stopped tracking and removed ${removedState.join(', ')} (they came from the repo, so they are not trusted as machine-local state).` : '');
 
   // Stage changes
   const addRes = runGit(['add', '-A'], hub);
