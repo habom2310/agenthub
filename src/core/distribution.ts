@@ -4,7 +4,7 @@ import path from 'node:path';
 import childProcess, { spawnSync } from 'node:child_process';
 import { ensureDir, isJunctionOrSymlink, safeWriteFile } from '../utils/fs.js';
 import { getHomeDir, getHubDir } from './detector.js';
-import { checkSubpath, copyable, finalizeInstall, vendorCheckedOutSkill } from './installer.js';
+import { checkSubpath, copyable, dropLinks, finalizeInstall, vendorCheckedOutSkill } from './installer.js';
 import { linkSkillsForAllAssistants } from './linker.js';
 import { loadManifest, setDeclaredSource } from './manifest.js';
 import { findSkills, selectSkills, type DiscoveredSkill } from './skill-discovery.js';
@@ -71,7 +71,7 @@ function git(args: string[], cwd?: string): ReturnType<typeof childProcess.spawn
 /**
  * Resolves a package target (local directory or remote git repo) to a local filesystem directory.
  * Returns the resolved directory path, package identifier, and a cleanup callback.
- * Remote targets: owner/repo[#ref][@skill], GitHub/GitLab/Azure Repos URLs (with ref and
+ * Remote targets: owner/repo[@skill] (ref via --ref), GitHub/GitLab/Azure Repos URLs (with ref and
  * path), or any https/ssh/git URL. For a URL that points into the repo, dir is that folder.
  */
 export function resolvePackageTarget(target: string, options: { ref?: string } = {}): {
@@ -132,16 +132,20 @@ export function resolvePackageTarget(target: string, options: { ref?: string } =
   };
 
   const byCommit = spec.ref !== undefined && /^[0-9a-f]{40}$/i.test(spec.ref);
-  const cloneRes = git(['clone', ...(byCommit ? [] : ['--depth', '1']), ...(spec.ref && !byCommit ? ['--branch', spec.ref] : []), url, tempDir]);
-
-  if (cloneRes.error) fail(`Git clone failed for ${url}: ${cloneRes.error.message}`);
-  if (cloneRes.status !== 0) {
-    const errMsg = String(cloneRes.stderr || '').trim() || String(cloneRes.stdout || '').trim() || `Exit code ${cloneRes.status}`;
-    fail(treeHint(`Git clone failed for ${url}: ${errMsg}`));
-  }
+  const gitFailed = (what: string, res: ReturnType<typeof git>): string =>
+    `${what} failed for ${url}: ${res.error?.message || String(res.stderr || '').trim() || String(res.stdout || '').trim() || `Exit code ${res.status}`}`;
   if (byCommit) {
-    const co = git(['checkout', '-q', '--detach', spec.ref as string], tempDir);
-    if (co.error || co.status !== 0) fail(`Git checkout of ${spec.ref} failed for ${url}: ${String(co.stderr || '').trim()}`);
+    // shallow fetch of the one commit; some servers refuse that, so fall back to a full fetch
+    const sha = spec.ref as string;
+    git(['init', '-q'], tempDir);
+    let res = git(['fetch', '-q', '--depth', '1', '--', url, sha], tempDir);
+    if (res.error || res.status !== 0) res = git(['fetch', '-q', '--', url, '+refs/heads/*:refs/remotes/origin/*', '+refs/tags/*:refs/tags/*'], tempDir);
+    if (res.error || res.status !== 0) fail(treeHint(gitFailed('Git fetch', res)));
+    const co = git(['checkout', '-q', '--detach', sha], tempDir);
+    if (co.error || co.status !== 0) fail(gitFailed(`Git checkout of ${sha}`, co));
+  } else {
+    const cloneRes = git(['clone', '--depth', '1', ...(spec.ref ? ['--branch', spec.ref] : []), url, tempDir]);
+    if (cloneRes.error || cloneRes.status !== 0) fail(treeHint(gitFailed('Git clone', cloneRes)));
   }
 
   const headRes = git(['rev-parse', 'HEAD'], tempDir);
@@ -149,6 +153,7 @@ export function resolvePackageTarget(target: string, options: { ref?: string } =
   if (!/^[0-9a-f]{40}$/.test(commit)) fail(`Could not determine the commit of ${url}`);
 
   try {
+    dropLinks(tempDir);
     checkSubpath(tempDir, spec.subpath, url);
   } catch (err) {
     cleanup();

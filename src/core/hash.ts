@@ -33,10 +33,20 @@ export function isGeneratedManifest(rel: string, full: string): boolean {
   }
 }
 
+/** The bytes with every CRLF turned into LF. */
+function lfBytes(buf: Buffer): Buffer {
+  if (!buf.includes(0x0d)) return buf;
+  const out = Buffer.allocUnsafe(buf.length);
+  let n = 0;
+  for (let i = 0; i < buf.length; i++) if (!(buf[i] === 0x0d && buf[i + 1] === 0x0a)) out[n++] = buf[i];
+  return out.subarray(0, n);
+}
+
 /**
  * Hashes the given files and symlinks of a folder (relative paths, any separator).
  * Paths are normalised to NFC with forward slashes and sorted in code-unit order.
- * Contents are raw bytes: a CRLF checkout hashes differently from an LF one.
+ * Contents are raw bytes except that CRLF counts as LF, so a checkout with
+ * core.autocrlf=true hashes the same as an LF one.
  * File modes and mtimes are ignored. A file is framed "path NUL size NUL bytes" and a
  * symlink "path NUL L NUL target NUL", so no two layouts collide.
  */
@@ -48,7 +58,7 @@ export function hashEntries(dir: string, rels: string[]): string {
     const st = fs.lstatSync(full);
     if (st.isSymbolicLink()) hash.update(`${name}\0L\0${fs.readlinkSync(full)}\0`);
     else if (st.isFile()) {
-      const content = fs.readFileSync(full);
+      const content = lfBytes(fs.readFileSync(full));
       hash.update(`${name}\0${content.length}\0`).update(content);
     }
   }

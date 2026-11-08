@@ -12,7 +12,8 @@ import { getHomeDir } from './detector.js';
  * .gitignore or not:
  *   $XDG_STATE_HOME/agenthub/<id>/   (default ~/.local/state/agenthub/<id>/)
  *   %LOCALAPPDATA%\agenthub\<id>\    (Windows)
- * <id> is the first 16 hex characters of sha256(realpath of the hub).
+ * <id> is the first 16 hex characters of sha256(realpath of the hub), lowercased on
+ * Windows so a differently capitalised spelling of the same hub finds the same state.
  * When --home or AGENTHUB_HOME points elsewhere, the state goes under that home,
  * so such runs never touch the real machine state.
  */
@@ -22,7 +23,7 @@ function realish(p: string): string {
   const rest: string[] = [];
   for (;;) {
     try {
-      return path.join(fs.realpathSync(cur), ...rest);
+      return path.join(fs.realpathSync.native(cur), ...rest);
     } catch {
       const up = path.dirname(cur);
       if (up === cur) return path.resolve(p);
@@ -33,7 +34,8 @@ function realish(p: string): string {
 }
 
 export function hubId(hub: string): string {
-  return createHash('sha256').update(realish(hub)).digest('hex').slice(0, 16);
+  const real = realish(hub);
+  return createHash('sha256').update(process.platform === 'win32' ? real.toLowerCase() : real).digest('hex').slice(0, 16);
 }
 
 export function stateDir(hub: string): string {

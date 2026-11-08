@@ -413,13 +413,14 @@ describe('distribution engine (packageInfo, packageAdd, resolvePackageTarget)', 
   describe('more source formats and skill discovery', () => {
     const sha = 'e'.repeat(40);
     // a fake clone that lays out the given files and records the git calls
-    const mockClone = (files: Record<string, string>) => {
+    const mockClone = (files: Record<string, string>, refuseShallow = false) => {
       const calls: string[][] = [];
-      vi.spyOn(childProcess, 'spawnSync').mockImplementation((cmd, args) => {
+      vi.spyOn(childProcess, 'spawnSync').mockImplementation((cmd, args, opts) => {
         calls.push(args as string[]);
         if (args?.[0] === 'rev-parse') return { status: 0, stdout: `${sha}\n`, stderr: '' } as any;
-        if (args?.[0] === 'clone') {
-          const dest = args[args.length - 1] as string;
+        if (refuseShallow && args?.[0] === 'fetch' && args.includes('--depth')) return { status: 128, stdout: '', stderr: 'not our ref' } as any;
+        if (args?.[0] === 'clone' || args?.[0] === 'checkout') {
+          const dest = args[0] === 'clone' ? (args[args.length - 1] as string) : (opts as { cwd: string }).cwd;
           for (const [rel, content] of Object.entries(files)) safeWriteFile(path.join(dest, rel), content);
         }
         return { status: 0, stdout: '', stderr: '' } as any;
@@ -451,12 +452,23 @@ describe('distribution engine (packageInfo, packageAdd, resolvePackageTarget)', 
       expect(lockSkills().alpha).toMatchObject({ source: 'github:alice/pack#skills/alpha ref=release/1.0', commit: sha });
     });
 
-    it('a commit ref is checked out after a full clone', () => {
+    it('a commit ref is fetched shallow, then checked out', () => {
       const calls = mockClone(repo);
       const ref = 'c'.repeat(40);
       packageAdd('alice/pack@alpha', { homeDir, hubDir, ref });
-      expect(calls[0].slice(0, 2)).toEqual(['clone', 'https://github.com/alice/pack.git']);
-      expect(calls[1]).toEqual(['checkout', '-q', '--detach', ref]);
+      expect(calls.slice(0, 3)).toEqual([
+        ['init', '-q'],
+        ['fetch', '-q', '--depth', '1', '--', 'https://github.com/alice/pack.git', ref],
+        ['checkout', '-q', '--detach', ref],
+      ]);
+    });
+
+    it('a commit ref falls back to a full fetch when the server refuses a shallow one', () => {
+      const calls = mockClone(repo, true);
+      const ref = 'c'.repeat(40);
+      packageAdd('alice/pack@alpha', { homeDir, hubDir, ref });
+      expect(calls[2].slice(0, 4)).toEqual(['fetch', '-q', '--', 'https://github.com/alice/pack.git']);
+      expect(calls[3]).toEqual(['checkout', '-q', '--detach', ref]);
     });
 
     it('a GitHub tree URL gives ref and subpath; the skill is found under it', () => {

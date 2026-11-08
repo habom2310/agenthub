@@ -9,7 +9,7 @@ import { checkSources } from '../src/core/check.js';
 import { setCustomHome } from '../src/core/detector.js';
 import { sourceItems } from '../src/core/doctor-full.js';
 import { GENERATED_MARK, hashFolder, hashSkill } from '../src/core/hash.js';
-import { planInstall, runInstall, vendorCheckedOutSkill } from '../src/core/installer.js';
+import { dropLinks, planInstall, runInstall, vendorCheckedOutSkill } from '../src/core/installer.js';
 import { projectCodexSkillManifests } from '../src/core/linker.js';
 import { loadLock, runtime, saveLock, serializeLock } from '../src/core/sources.js';
 
@@ -191,11 +191,35 @@ describe('lockfile hashes, check and frozen lockfile', () => {
       expect(await hashOf()).toBe(base);
       write(path.join(dir, 'untracked.js'), 'new source');
       expect(await hashOf()).not.toBe(base);
-      // an output folder git does not ignore counts: only git decides, not the name
-      write(path.join(dir, 'untracked.js'), 'new source');
+      // build output folders are left out even when git does not ignore them
       const withUntracked = await hashOf();
       write(path.join(dir, 'dist', 'o.js'), 'not ignored by git');
-      expect(await hashOf()).not.toBe(withUntracked);
+      write(path.join(dir, 'node_modules', 'p', 'index.js'), 'dependency');
+      expect(await hashOf()).toBe(withUntracked);
+      // and CRLF counts as LF, so a Windows checkout of the hub hashes like a Linux one
+      write(path.join(dir, 'untracked.js'), 'new\r\nsource');
+      const crlf = await hashOf();
+      write(path.join(dir, 'untracked.js'), 'new\nsource');
+      expect(await hashOf()).toBe(crlf);
+    });
+
+    it('a local build in git that writes dist/ and node_modules/ is current on the next run', async () => {
+      manifest({ mcp: { m: { source: 'local', build: 'node build.js' } } });
+      write(path.join(hub, 'mcp', 'servers.json'), JSON.stringify({ mcpServers: { m: { command: 'node', args: ['x'] } } }));
+      const dir = path.join(hub, 'mcp', 'servers', 'm');
+      write(path.join(dir, 'index.js'), 'one');
+      write(
+        path.join(dir, 'build.js'),
+        "const fs = require('fs'); for (const d of ['dist', 'node_modules']) { fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(d + '/out.js', String(Date.now())); }"
+      );
+      spawnSync('git', ['init', '-q'], { cwd: dir });
+      const { plan, result } = await install();
+      expect(result.failed).toEqual([]);
+      expect(fs.existsSync(path.join(dir, 'dist', 'out.js'))).toBe(true);
+      const next = await planInstall(hub);
+      expect(next.actions).toEqual([]);
+      expect(next.lock.mcp.m.hash).toBe(plan.lock.mcp.m.hash);
+      expect((await checkSources(hub)).findings.find((f) => f.item.endsWith(' m'))).toMatchObject({ status: 'current' });
     });
 
     it('records a hash of the sources of a local MCP build, not of its build output', async () => {
@@ -394,4 +418,70 @@ describe('lockfile hashes, check and frozen lockfile', () => {
       expect(loadLock(hub).skills.s.commit).toBe(SHA2);
     });
   });
+});
+
+describe('lock hash across machines (real git)', () => {
+  let tmp: string;
+  let repo: string;
+  let commit: string;
+  const URL = 'https://github.com/o/r.git';
+  const g = (cwd: string, ...args: string[]): string => {
+    const res = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf-8', input: args.includes('--stdin') ? '../../secret' : undefined });
+    if (res.status !== 0) throw new Error(`git ${args.join(' ')}: ${res.stderr}`);
+    return res.stdout.trim();
+  };
+  const hubAt = (name: string): string => {
+    const hub = path.join(tmp, name, '.agenthub');
+    fs.mkdirSync(path.join(hub, 'skills'), { recursive: true });
+    return hub;
+  };
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agenthub-lockgit-'));
+    repo = path.join(tmp, 'repo');
+    fs.mkdirSync(path.join(repo, 'skills', 's'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'skills', 's', 'SKILL.md'), '# skill\nline two\n');
+    g(repo, 'init', '-q');
+    g(repo, 'add', '.');
+    // a symlink entry, written into the index so the test needs no symlink rights on Windows
+    const blob = g(repo, 'hash-object', '-w', '--stdin');
+    g(repo, 'update-index', '--add', '--cacheinfo', `120000,${blob},skills/s/link`);
+    g(repo, 'commit', '-q', '-m', 'init');
+    commit = g(repo, 'rev-parse', 'HEAD');
+    // install fetches github:o/r from the local repo instead
+    const real = runtime.spawn.bind(runtime);
+    vi.spyOn(runtime, 'spawn').mockImplementation((cmd, args, cwd) => real(cmd, args.map((a) => (a === URL ? repo : a)), cwd));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    setCustomHome(null, null);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  // add on one machine (any core.symlinks / core.autocrlf), install on a clean one with the other setting
+  for (const [symlinks, autocrlf] of [['false', 'true'], ['true', 'false']]) {
+    it(`add with core.symlinks=${symlinks} core.autocrlf=${autocrlf} gives a lock that install verifies`, async () => {
+      const clone = path.join(tmp, 'clone');
+      g(tmp, '-c', `core.symlinks=${symlinks}`, '-c', `core.autocrlf=${autocrlf}`, 'clone', '-q', repo, clone);
+      dropLinks(clone);
+      const a = hubAt('a');
+      setCustomHome(path.dirname(a), a);
+      vendorCheckedOutSkill(a, 's', 'github:o/r#skills/s', commit, path.join(clone, 'skills', 's'));
+      const locked = loadLock(a).skills.s;
+      expect(fs.existsSync(path.join(a, 'vendor', 'skills', 's', 'skills', 's', 'link'))).toBe(false);
+
+      const b = hubAt('b');
+      setCustomHome(path.dirname(b), b);
+      fs.copyFileSync(path.join(a, 'agenthub.json'), path.join(b, 'agenthub.json'));
+      saveLock(b, loadLock(a));
+      const plan = await planInstall(b, { frozen: true });
+      expect(plan.errors).toEqual([]);
+      const result = runInstall(plan);
+      expect(result.failed).toEqual([]);
+      const target = path.join(b, 'vendor', 'skills', 's', 'skills', 's');
+      expect(fs.existsSync(path.join(target, 'link'))).toBe(false);
+      expect(hashSkill(target)).toBe(locked.hash);
+    });
+  }
 });

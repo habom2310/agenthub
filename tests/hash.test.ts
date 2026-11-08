@@ -122,11 +122,14 @@ describe('hashFolder', () => {
     expect(hashSkill(tmp)).not.toBe(base);
   });
 
-  it('hashes bytes as-is: CRLF and LF differ', () => {
+  it('is line-ending independent: CRLF counts as LF, other bytes as they are', () => {
     const a = path.join(tmp, 'a');
     const b = path.join(tmp, 'b');
-    write(a, 'SKILL.md', 'line\n');
-    write(b, 'SKILL.md', 'line\r\n');
-    expect(hashFolder(a)).not.toBe(hashFolder(b));
+    const c = path.join(tmp, 'c');
+    write(a, 'SKILL.md', 'one\ntwo\n');
+    write(b, 'SKILL.md', 'one\r\ntwo\r\n');
+    write(c, 'SKILL.md', 'one\rtwo\n');
+    expect(hashFolder(a)).toBe(hashFolder(b));
+    expect(hashFolder(c)).not.toBe(hashFolder(a));
   });
 });

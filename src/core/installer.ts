@@ -164,15 +164,39 @@ export function skillTarget(hub: string, decl: DeclaredSource): string | null {
 export const copyable = (src: string): boolean => path.basename(src) !== '.git' && !fs.lstatSync(src).isSymbolicLink();
 
 /**
- * Hash of the sources of a local MCP build. In a git repo that is what git tracks plus
- * what it does not ignore (a fixed git command, nothing the hub declares); otherwise
- * the folder minus the usual build output folders.
+ * Removes the symlinks from a fetched folder, so `add` and `install` vendor (and hash)
+ * the same files on every platform. In a git checkout that includes the links git wrote
+ * as plain files (core.symlinks=false, the Windows default).
+ */
+export function dropLinks(root: string): void {
+  const res = runtime.spawn('git', ['ls-files', '-s', '-z'], root);
+  if (res.status === 0 && !res.error && typeof res.stdout === 'string') {
+    for (const line of res.stdout.split('\0')) {
+      const m = line.match(/^120000 [0-9a-f]+ \d+\t(.+)$/);
+      if (m) fs.rmSync(path.join(root, m[1]), { recursive: true, force: true });
+    }
+  }
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) fs.rmSync(full, { recursive: true, force: true });
+      else if (entry.isDirectory() && entry.name !== '.git') walk(full);
+    }
+  };
+  walk(root);
+}
+
+/**
+ * Hash of the sources of a local MCP build: what git tracks plus what it does not
+ * ignore (a fixed git command, nothing the hub declares), or the whole folder outside
+ * git. The usual build output folders are left out either way.
  */
 export function localBuildHash(hub: string, name: string): string {
   const dir = localMcpDir(hub, name);
   const res = runtime.spawn('git', ['ls-files', '-co', '--exclude-standard', '-z'], dir);
   if (res.status === 0 && !res.error) {
     const rels = [...new Set(res.stdout.split('\0').filter(Boolean))].filter((rel) => {
+      if (rel.split('/').slice(0, -1).some((seg) => BUILD_HASH_SKIP.has(seg))) return false;
       try {
         const st = fs.lstatSync(path.join(dir, rel));
         return st.isFile() || st.isSymbolicLink();
@@ -214,7 +238,8 @@ function desiredState(hub: string, decl: DeclaredSource, pin?: LockEntry): strin
   const p = decl.parsed;
   if (p.type === 'github' || p.type === 'git') return `${pin?.commit}|${p.build ?? ''}`;
   if (p.type === 'npm') return pin?.version;
-  if (p.type === 'local' && p.build) return `${p.build}|${localBuildHash(hub, decl.name)}`;
+  // the hash taken before the build (the lock's), so files the build writes do not count
+  if (p.type === 'local' && p.build) return `${p.build}|${pin?.hash ?? localBuildHash(hub, decl.name)}`;
   return undefined;
 }
 
@@ -329,7 +354,7 @@ export async function planInstall(hubDir?: string, options: PlanOptions = {}): P
         if (usable && !same) delete pin.hash;
         lock[decl.kind][decl.name] = pin;
       } else if (isLocalBuild(decl) && isDir(localMcpDir(hub, decl.name))) {
-        lock[decl.kind][decl.name] = { source: decl.spec, hash: localBuildHash(hub, decl.name) };
+        pin = lock[decl.kind][decl.name] = { source: decl.spec, hash: localBuildHash(hub, decl.name) };
       }
       if (frozen && pin && decl.kind === 'skills' && !pin.hash && vendoredSkillDir(hub, decl)) {
         throw notFrozen('has no content hash in agenthub.lock.json');
@@ -357,7 +382,7 @@ export async function planInstall(hubDir?: string, options: PlanOptions = {}): P
         case 'local': {
           const dir = decl.kind === 'skills' ? path.join(hub, 'skills', decl.name) : localMcpDir(hub, decl.name);
           if (!isDir(dir)) throw new Error(`declared "local" but ${relTo(hub, dir)}/ does not exist`);
-          if (p.build) add([`${p.build}  (in ${relTo(hub, dir)})`], [ref('build', `${p.build}  [sources sha256:${localBuildHash(hub, decl.name)}]`)], undefined);
+          if (p.build) add([`${p.build}  (in ${relTo(hub, dir)})`], [ref('build', `${p.build}  [sources sha256:${pin?.hash ?? localBuildHash(hub, decl.name)}]`)], undefined);
           break;
         }
         case 'github':
@@ -492,6 +517,7 @@ function installFromGit(hub: string, a: InstallAction): void {
         runTool('git', ['fetch', '-q', '--', p.url, '+refs/heads/*:refs/remotes/origin/*', '+refs/tags/*:refs/tags/*'], tmp);
       }
     }
+    dropLinks(tmp);
     checkSubpath(tmp, p.subpath, `${p.url}@${commit.slice(0, 12)}`);
     verifyHash(a, path.join(tmp, p.subpath ?? ''));
     swapIn(tmp, finalDir);
@@ -515,6 +541,7 @@ function installFromNpm(hub: string, a: InstallAction): void {
     const [pack, untar] = npmSteps(p.pkg, version);
     const tarball = runTool('npm', pack.args as string[], work).trim().split(/\r?\n/).pop() as string;
     runTool('tar', (untar.args as string[]).map((x) => (x === '<tarball>' ? tarball : x)), work);
+    dropLinks(extracted);
     checkSubpath(extracted, p.subpath, `${p.pkg}@${version}`);
     verifyHash(a, path.join(extracted, p.subpath ?? ''));
     swapIn(extracted, finalDir);
