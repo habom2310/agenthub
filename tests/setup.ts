@@ -18,6 +18,11 @@ delete process.env.CI;
 // machine-local state goes under the throwaway home too
 delete process.env.XDG_STATE_HOME;
 process.env.LOCALAPPDATA = path.join(home, 'AppData', 'Local');
+// Newer git starts detached auto-maintenance after commit, fetch and push. It can still be writing
+// in a test's temp repo during cleanup, and rmSync then fails with ENOTEMPTY.
+const gitConfig = path.join(home, '.gitconfig');
+fs.writeFileSync(gitConfig, '[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n');
+process.env.GIT_CONFIG_GLOBAL = gitConfig;
 
 // A `pi` or `copilot` binary on the developer's PATH would make every temp home look like it has Pi or Copilot installed.
 const DETECTED_BINARIES = ['pi', 'copilot'].flatMap((b) => [b, `${b}.cmd`, `${b}.exe`, `${b}.bat`]);

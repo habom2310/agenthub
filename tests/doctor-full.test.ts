@@ -98,7 +98,10 @@ describe('functional doctor', () => {
     it('runs custom check commands only when functional', async () => {
       const marker = path.join(tmp, 'check-ran');
       writeServers({ tool: { command: 'x' } });
-      writeManifest({ mcp: { tool: { install: 'exit 0', check: `touch ${JSON.stringify(marker)} && test -f ${JSON.stringify(path.join(tmp, 'absent'))}` } } });
+      // a node script instead of touch/test, so the check runs under cmd.exe without Unix tools on PATH
+      const script = path.join(tmp, 'check.js');
+      fs.writeFileSync(script, `const fs = require('fs');\nfs.writeFileSync(${JSON.stringify(marker)}, '');\nprocess.exit(fs.existsSync(${JSON.stringify(path.join(tmp, 'absent'))}) ? 0 : 1);\n`);
+      writeManifest({ mcp: { tool: { install: 'exit 0', check: `"${process.execPath}" "${script}"` } } });
 
       expect(await sourceItems(hub, false)).toEqual([]);
       expect(fs.existsSync(marker)).toBe(false);
