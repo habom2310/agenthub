@@ -608,6 +608,7 @@ Afterwards each one is reported as `✓ <name>: already installed (check passed)
 Without a terminal and without `--yes`, nothing is installed and the items are reported as pending (exit code 1).
 Git, npm and uv are only needed for the sources that use them, and a missing tool is reported for that item only.
 One failing item does not stop the others, and `agenthub` never runs `sudo`.
+Failed, pending and manual installs are skipped when creating new skill links and projecting MCP entries, with a `[SKIP]` warning. MCP sync also skips servers whose executable cannot be found using their configured environment and working directory, without starting them. Existing skill links and assistant MCP entries are preserved when an update fails. Undeclared skills continue to work through the shared skills folder.
 Custom `install`, `check` and `build` strings run through your shell, so `agenthub info` flags them as elevated risk.
 Git, npm and uv commands never go through a shell, and lockfile commits and versions are validated before use.
 A local MCP `build` reruns when the build string or the folder's contents change (`node_modules`, `.git` and common build output folders are ignored).

@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { getUtcTimestamp, safeWriteFile } from '../utils/fs.js';
-import { getHomeDir, getHubDir } from './detector.js';
+import { findExecutable, getUtcTimestamp, safeWriteFile } from '../utils/fs.js';
+import { getHomeDir, getHubDir, homeEnv } from './detector.js';
+import { resolveServerVars } from './mcp-probe.js';
 import { ignoredNames } from './local.js';
 import { DEFAULT_MANIFEST_MCP, removeDeclaredSource } from './manifest.js';
 import { defaultTemplateServers } from './scaffold.js';
@@ -67,6 +68,14 @@ export interface McpStatusReport {
 export interface SyncMcpResult {
   success: boolean;
   actions: string[];
+}
+
+export interface SyncMcpOptions {
+  homeDir?: string;
+  hubDir?: string;
+  force?: boolean;
+  /** Item labels whose install failed, was declined, or needs manual intervention. */
+  skipItems?: string[];
 }
 
 export function readJsonSafely<T = Record<string, unknown>>(
@@ -336,22 +345,23 @@ function isConflict(platform: McpPlatform, id: McpPlatformId, name: string, orig
 }
 
 function resolveArgs(
-  homeDirOrOptions?: string | { homeDir?: string; hubDir?: string; force?: boolean },
+  homeDirOrOptions?: string | SyncMcpOptions,
   hubDir?: string
-): { home: string; hub: string; force: boolean } {
+): { home: string; hub: string; force: boolean; skipItems: string[] } {
   const obj = typeof homeDirOrOptions === 'object' && homeDirOrOptions ? homeDirOrOptions : null;
   return {
     home: (obj ? obj.homeDir : (homeDirOrOptions as string | undefined)) || getHomeDir(),
     hub: (obj ? obj.hubDir : hubDir) || getHubDir(),
     force: Boolean(obj?.force),
+    skipItems: obj?.skipItems ?? [],
   };
 }
 
 export function getMcpStatus(
-  homeDirOrOptions?: string | { homeDir?: string; hubDir?: string },
+  homeDirOrOptions?: string | SyncMcpOptions,
   hubDir?: string
 ): McpStatusReport {
-  const { home, hub } = resolveArgs(homeDirOrOptions, hubDir);
+  const { home, hub, skipItems } = resolveArgs(homeDirOrOptions, hubDir);
 
   const hubPath = path.join(hub, 'mcp', 'servers.json');
   const hubExists = fs.existsSync(hubPath);
@@ -364,6 +374,7 @@ export function getMcpStatus(
       ? { ...(hubRead.data.mcpServers as Record<string, McpServerConfig>) }
       : {};
   const ignored = ignoredNames(hub, 'mcp');
+  for (const item of skipItems) if (item.startsWith('mcp ')) ignored.add(item.slice(4));
   for (const n of ignored) delete hubServers[n];
   const expandedHub = expandServers(hubServers, home, hub);
   const origins = readOrigins(hub);
@@ -490,11 +501,42 @@ export function purgeIgnoredMcp(hub: string): string[] {
   return actions;
 }
 
+/** Checks only launch paths, without starting a server or resolving its credentials. */
+function commandProblem(cfg: McpServerConfig, home: string): string | null {
+  if (!isServerObject(cfg)) return 'invalid server configuration';
+  if (!cfg.command && typeof cfg.url === 'string') return null;
+  if (typeof cfg.command !== 'string' || !cfg.command) return 'server has neither a command nor a url';
+  const env = homeEnv(process.env, home);
+  const { config, unresolved } = resolveServerVars({
+    command: cfg.command,
+    cwd: cfg.cwd,
+    env: {
+      PATH: cfg.env?.PATH ?? cfg.env?.Path ?? env.PATH ?? '',
+      PATHEXT: cfg.env?.PATHEXT ?? env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD',
+    },
+  }, env, home);
+  if (unresolved.length > 0) return 'unresolved variable in command, cwd or PATH';
+  return findExecutable(config.command as string, config.env, typeof config.cwd === 'string' ? config.cwd : undefined)
+    ? null : 'executable not found';
+}
+
+/** Expands paths and excludes unresolved servers before any assistant receives a new entry. */
+function projectableServers(servers: Record<string, McpServerConfig>, home: string, hub: string, skipItems: string[], actions: string[]): Record<string, McpServerConfig> {
+  const projected = expandServers(servers, home, hub);
+  for (const [name, cfg] of Object.entries(projected)) {
+    const problem = skipItems.includes(`mcp ${name}`) ? 'install failed or pending' : commandProblem(cfg, home);
+    if (!problem) continue;
+    delete projected[name];
+    actions.push(`[SKIP] MCP "${name}": ${problem}; not projected`);
+  }
+  return projected;
+}
+
 export function syncMcpServers(
-  homeDirOrOptions?: string | { homeDir?: string; hubDir?: string; force?: boolean },
+  homeDirOrOptions?: string | SyncMcpOptions,
   hubDir?: string
 ): SyncMcpResult {
-  const { home, hub, force } = resolveArgs(homeDirOrOptions, hubDir);
+  const { home, hub, force, skipItems } = resolveArgs(homeDirOrOptions, hubDir);
   const actions: string[] = adoptStarterOverrides({ homeDir: home, hubDir: hub });
   const ignored = ignoredNames(hub, 'mcp');
 
@@ -555,7 +597,7 @@ export function syncMcpServers(
     actions.push('Updated hub servers.json');
   }
 
-  const allProjected = expandServers(hubServers, home, hub);
+  const allProjected = projectableServers(hubServers, home, hub, skipItems, actions);
 
   const backupDir = path.join(hub, 'backups', `mcp-sync-${getUtcTimestamp()}`);
 

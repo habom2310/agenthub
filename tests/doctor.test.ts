@@ -364,7 +364,7 @@ describe('doctor', () => {
     const mcpData = {
       mcpServers: {
         'test-srv': { command: 'node', args: ['srv.js'] },
-        'fresh-mcp': { command: 'bun', args: ['fresh.ts'] },
+        'fresh-mcp': { command: process.execPath, args: ['fresh.ts'] },
       },
     };
     safeWriteFile(

@@ -13,6 +13,7 @@ import { runtime } from '../src/core/sources.js';
 import { gitInitHub, gitPush, ignoreMachineSpecificSkills } from '../src/core/git-sync.js';
 import { buildPackagePayload } from '../src/core/registry.js';
 import { createJunction } from '../src/utils/fs.js';
+import { createTestCommands } from './fixtures/commands.js';
 
 const git = (cwd: string, ...args: string[]) =>
   spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@test', ...args], { cwd, encoding: 'utf-8' });
@@ -37,6 +38,7 @@ describe.skipIf(process.platform === 'win32')('findings from a real machine', ()
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     setCustomHome(null, null);
     process.exitCode = undefined;
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -176,6 +178,7 @@ describe.skipIf(process.platform === 'win32')('findings from a real machine', ()
     const hub = path.join(home, '.agenthub');
     const wrapper = path.join(home, '.claude', 'hooks', 'codegraph-mcp.sh');
     write(wrapper, '#!/bin/sh\n');
+    fs.chmodSync(wrapper, 0o755);
     write(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: { codegraph: { type: 'stdio', command: wrapper, args: [] } } }));
 
     await runCli(['-H', home, 'setup']);
@@ -194,12 +197,15 @@ describe.skipIf(process.platform === 'win32')('findings from a real machine', ()
   it('D: a customised hub entry or declaration is left alone, and conflicts name a working fix', async () => {
     const home = path.join(tmp, 'home');
     const hub = path.join(home, '.agenthub');
+    const bin = path.join(home, 'bin');
+    createTestCommands(bin, ['codegraph']);
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
     write(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: { codegraph: { type: 'stdio', command: 'mine', args: [] } } }));
     await runCli(['-H', home, 'setup', '--scaffold-only']);
     write(path.join(hub, 'mcp', 'servers.json'), JSON.stringify({ mcpServers: { codegraph: { command: 'codegraph', args: ['serve', '--mcp', '--extra'] } } }));
 
     logs.length = 0;
-    await runCli(['-H', home, 'setup']);
+    await runCli(['-H', home, 'setup', '--yes']);
     expect(process.exitCode).toBe(1);
     const out = logs.join('\n');
     expect(out).toContain('agenthub mcp sync --force');
@@ -544,7 +550,7 @@ describe('review follow-ups', () => {
     git(tmp, 'init', '-q', '--bare', '-b', 'main', bare);
     const home = path.join(tmp, 'home');
     const hub = path.join(home, '.agenthub');
-    const claudeServers = { work: { type: 'stdio', command: 'work-mcp', args: [] }, keep: { type: 'stdio', command: 'keep-mcp', args: [] } };
+    const claudeServers = { work: { type: 'stdio', command: 'work-mcp', args: [] }, keep: { type: 'stdio', command: process.execPath, args: [] } };
     write(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: claudeServers }));
     await runCli(['-H', home, 'setup', '--scaffold-only']);
     await runCli(['-H', home, 'mcp', 'sync']);

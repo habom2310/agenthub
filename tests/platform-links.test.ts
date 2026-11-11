@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   cursorSkillsProvider,
   linkSkillsForAllAssistants,
@@ -15,6 +15,7 @@ import { syncMcpServers } from '../src/core/mcp-sync.js';
 import { uninstallHub } from '../src/core/uninstaller.js';
 import { backupExistingConfigs } from '../src/core/scaffold.js';
 import { createJunction, ensureDir, isJunctionOrSymlink, safeWriteFile } from '../src/utils/fs.js';
+import { createTestCommands } from './fixtures/commands.js';
 
 describe('skills links for Cursor, Windsurf and Copilot', () => {
   let tmp: string;
@@ -107,8 +108,14 @@ describe('uninstall rolls back the new platforms', () => {
     home = path.join(tmp, 'home');
     hub = path.join(tmp, 'hub');
     ensureDir(path.join(hub, 'skills'));
+    const bin = path.join(home, 'bin');
+    createTestCommands(bin, ['mine', 'theirs', 'solo', 'shared', 'orig', 'same', 'a']);
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
   });
-  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
 
   it('unlinks Copilot skills and restores skills.old', () => {
     const skills = path.join(home, '.copilot', 'skills');

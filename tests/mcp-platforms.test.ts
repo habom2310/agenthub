@@ -2,10 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MCP_PLATFORMS, spliceCodexServers } from '../src/core/mcp-platforms.js';
 import { getMcpStatus, syncMcpServers } from '../src/core/mcp-sync.js';
 import { ensureDir, safeWriteFile } from '../src/utils/fs.js';
+import { createTestCommands } from './fixtures/commands.js';
 
 const read = (p: string) => fs.readFileSync(p, 'utf-8');
 const readJson = (p: string) => JSON.parse(read(p));
@@ -29,8 +30,14 @@ describe('MCP platform adapters', () => {
     hub = path.join(tmp, 'hub');
     for (const d of ['.codex', '.cursor', path.join('.codeium', 'windsurf'), '.copilot']) ensureDir(path.join(home, d));
     ensureDir(hub);
+    const bin = path.join(home, 'bin');
+    createTestCommands(bin, ['fresh', 'keep', 'hub-docs', 'a']);
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
   });
-  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
 
   const stdio = { command: 'node', args: ['${HUB}/mcp/servers/x/index.js'], env: { TOKEN: 'abc' } };
   const remote = { url: 'https://example.com/mcp', headers: { 'X-Key': 'k' } };

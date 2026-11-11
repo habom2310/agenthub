@@ -132,7 +132,7 @@ describe('functional doctor', () => {
   it('doctor --fix reports a conflicting MCP entry and leaves it alone; only mcp sync --force overwrites', async () => {
     const cursor = path.join(home, '.cursor', 'mcp.json');
     safeWriteFile(cursor, JSON.stringify({ mcpServers: { app: { command: 'mine' } } }));
-    writeServers({ app: { command: 'hub-app' } });
+    writeServers({ app: { command: process.execPath } });
     const res = await runFullDoctor({ homeDir: home, hubDir: hub, fix: true, functional: false });
     expect(JSON.parse(fs.readFileSync(cursor, 'utf-8')).mcpServers.app.command).toBe('mine');
     expect(res.ok).toBe(false);

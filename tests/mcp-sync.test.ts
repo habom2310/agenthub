@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setCustomHome } from '../src/core/detector.js';
 import {
   adaptServerForClaude,
@@ -14,6 +14,7 @@ import {
   syncMcpServers,
 } from '../src/core/mcp-sync.js';
 import { ensureDir, safeWriteFile } from '../src/utils/fs.js';
+import { createTestCommands } from './fixtures/commands.js';
 
 describe('mcp-sync', () => {
   let tmpDir: string;
@@ -27,10 +28,15 @@ describe('mcp-sync', () => {
     ensureDir(homeDir);
     ensureDir(hubDir);
     setCustomHome(homeDir, hubDir);
+    // These synchronization fixtures need discoverable commands, but never execute them.
+    const bin = path.join(homeDir, 'bin');
+    createTestCommands(bin, ['claude-srv', 'codegraph', 'shared-srv', 'typed-srv', 'srv', 'hub-app', 'standalone', 'tool']);
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
   });
 
   afterEach(() => {
     setCustomHome(null, null);
+    vi.unstubAllEnvs();
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {
