@@ -30,6 +30,7 @@ export interface DoctorOptions {
   fix?: boolean;
   homeDir?: string;
   hubDir?: string;
+  skipItems?: string[];
 }
 
 export interface DoctorResult {
@@ -39,10 +40,7 @@ export interface DoctorResult {
   repairs: string[];
 }
 
-function performChecks(
-  homeDir: string,
-  hubDir: string
-): { passed_checks: string[]; issues: string[] } {
+function performChecks(homeDir: string, hubDir: string, skipItems: string[] = []): { passed_checks: string[]; issues: string[] } {
   const passed_checks: string[] = [];
   const issues: string[] = [];
 
@@ -320,7 +318,7 @@ function performChecks(
   if (!fs.existsSync(mcpServersFile)) {
     issues.push(`MCP hub registry missing: ${mcpServersFile} does not exist`);
   } else {
-    const mcpStatus = getMcpStatus(homeDir, hubDir);
+    const mcpStatus = getMcpStatus({ homeDir, hubDir, skipItems });
     if (!mcpStatus.hub.valid) {
       issues.push(`MCP hub registry file is invalid or corrupt JSON: ${mcpServersFile}`);
     }
@@ -363,7 +361,7 @@ export function runDoctor(options?: DoctorOptions): DoctorResult {
   const homeDir = options?.homeDir || getHomeDir();
   const hubDir = options?.hubDir || getHubDir();
 
-  let { passed_checks, issues } = performChecks(homeDir, hubDir);
+  let { passed_checks, issues } = performChecks(homeDir, hubDir, options?.skipItems);
   const repairs: string[] = [];
 
   if (options?.fix && issues.length > 0) {
@@ -420,16 +418,16 @@ export function runDoctor(options?: DoctorOptions): DoctorResult {
     projectSubagents(homeDir, hubDir);
 
     const mcpServersFile = path.join(hubDir, 'mcp', 'servers.json');
-    const mcpStatus = getMcpStatus(homeDir, hubDir);
+    const mcpStatus = getMcpStatus({ homeDir, hubDir, skipItems: options?.skipItems });
     if (!fs.existsSync(mcpServersFile) || !mcpStatus.in_sync) {
-      const syncRes = syncMcpServers({ homeDir, hubDir });
+      const syncRes = syncMcpServers({ homeDir, hubDir, skipItems: options?.skipItems });
       repairs.push(...syncRes.actions);
     }
 
     repairs.push('Ran link_skills and projections across all platforms.');
 
     // Re-evaluate checks so passed_checks and issues reflect post-repair state
-    const after = performChecks(homeDir, hubDir);
+    const after = performChecks(homeDir, hubDir, options?.skipItems);
     passed_checks = after.passed_checks;
     issues = after.issues;
   }

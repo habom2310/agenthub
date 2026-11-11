@@ -191,11 +191,11 @@ export function safeWriteFile(filePath: string, content: string, options?: { mod
  * Finds an executable in the system PATH.
  * On Windows, checks extensions defined in PATHEXT (e.g. .exe, .cmd, .bat).
  */
-export function findExecutable(name: string): string | null {
+export function findExecutable(name: string, env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): string | null {
   if (!name) return null;
 
   const isWindows = process.platform === 'win32';
-  const pathEnv = process.env.PATH || '';
+  const pathEnv = env.PATH ?? env.Path ?? '';
   const pathDirs = pathEnv
     .split(path.delimiter)
     .map((p) => p.trim().replace(/^"(.*)"$/, '$1').trim())
@@ -203,7 +203,7 @@ export function findExecutable(name: string): string | null {
 
   const hasPathSep = name.includes('/') || (isWindows && name.includes('\\'));
 
-  const pathextEnv = process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD';
+  const pathextEnv = env.PATHEXT || '.COM;.EXE;.BAT;.CMD';
   const pathextList = pathextEnv.split(';').filter(Boolean);
 
   function checkFile(candidate: string): string | null {
@@ -241,11 +241,11 @@ export function findExecutable(name: string): string | null {
   }
 
   if (hasPathSep) {
-    return checkWithExtensions(path.resolve(name));
+    return checkWithExtensions(path.resolve(cwd, name));
   }
 
   for (const dir of pathDirs) {
-    const candidate = path.join(dir, name);
+    const candidate = path.resolve(cwd, dir, name);
     const found = checkWithExtensions(candidate);
     if (found) return found;
   }

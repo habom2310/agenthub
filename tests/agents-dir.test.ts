@@ -176,6 +176,7 @@ describe('~/.agents/skills, the cross-agent skills folder', () => {
       setCustomHome(home, hub);
       layout();
       const logs: string[] = [];
+      safeWriteFile(path.join(hub, 'mcp', 'servers.json'), JSON.stringify({ mcpServers: {} }));
       vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => void logs.push(a.map(String).join(' ')));
       await runCli(['-H', home, 'setup', '--yes']);
       vi.restoreAllMocks();

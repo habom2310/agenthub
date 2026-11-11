@@ -12,6 +12,7 @@ import { HEADER_GUARD, projectCodexRules, projectPiRules, projectRules } from '.
 import { backupExistingConfigs } from '../src/core/scaffold.js';
 import { uninstallHub } from '../src/core/uninstaller.js';
 import { ensureDir, safeWriteFile } from '../src/utils/fs.js';
+import { createTestCommands } from './fixtures/commands.js';
 
 const read = (p: string) => fs.readFileSync(p, 'utf-8');
 const readJson = (p: string) => JSON.parse(read(p));
@@ -36,6 +37,9 @@ describe('Pi', () => {
     ensureDir(hub);
     setCustomHome(home, hub);
     savedPath = process.env.PATH;
+    const bin = path.join(home, 'bin');
+    createTestCommands(bin, ['hub-docs', 'ok', 'b', 'd', 'mine', 'theirs', 'w']);
+    process.env.PATH = `${bin}${path.delimiter}${savedPath ?? ''}`;
   });
   afterEach(() => {
     process.env.PATH = savedPath;

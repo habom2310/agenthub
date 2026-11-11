@@ -188,18 +188,19 @@ export function buildCli(): Command {
   async function runInstallFlow(
     options: { yes?: boolean },
     flow: { probe?: boolean; pendingIsBlocker?: boolean; frozen?: boolean } = {}
-  ): Promise<{ blockers: string[]; approved: boolean }> {
+  ): Promise<{ blockers: string[]; approved: boolean; skipItems: string[] }> {
     const hub = getHubDir();
     const home = getHomeDir();
     const blockers: string[] = [];
     // before planning, so a starter the user replaced with their own is not installed
     for (const a of adoptStarterOverrides({ homeDir: home, hubDir: hub })) console.log(pc.dim(`  ${a}`));
     const plan = await planInstall(hub, { frozen: flow.frozen });
+    const skipItems = plan.errors.map((e) => e.item);
     const approvals = loadApprovals(hub);
     const known = (ref: CommandRef): boolean => isApproved(approvals, ref);
 
     for (const e of plan.errors) {
-      console.error(pc.red(`✗ ${e.item}: ${e.message}`));
+      console.error(pc.red(`✗ ${e.item}: ${e.message} (projection skipped)`));
       blockers.push(`${e.item}: ${e.message}`);
     }
     for (const w of plan.warnings) {
@@ -221,31 +222,26 @@ export function buildCli(): Command {
       flow.probe ? undefined : `Run these ${plan.actions.length} item(s)? [y/N] `
     );
 
-    if (plan.actions.length > 0) {
-      if (approved) {
-        const result = runInstall(plan);
-        installedCount = result.installed.length;
-        for (const item of result.already) console.log(pc.green(`✓ ${item.replace(/^(skill|mcp) /, '')}: already installed (check passed)`));
-        for (const item of result.installed) console.log(pc.green(`✓ Installed ${item}`));
-        for (const m of result.manual) {
-          manualCount++;
-          console.log(pc.yellow(`⚠ ${m.item}: ${m.message}`));
-        }
-        for (const f of result.failed) {
-          console.error(pc.red(`✗ ${f.item}: ${f.message}`));
-          blockers.push(`${f.item}: ${f.message}`);
-        }
-      } else {
-        const why = process.stdin.isTTY ? 'declined' : 'no TTY, re-run with --yes';
-        declined = true;
-        console.log(pc.yellow(`${plan.actions.length} install step(s) pending (${why}).`));
-        if (flow.pendingIsBlocker !== false) blockers.push(`${plan.actions.length} install step(s) pending (${why})`);
-        for (const p of finalizeInstall(hub, plan.actions.map(actionLabel))) blockers.push(`${p.item}: ${p.message}`);
-      }
+    if (plan.actions.length > 0 && !approved) {
+      const why = process.stdin.isTTY ? 'declined' : 'no TTY, re-run with --yes';
+      declined = true;
+      console.log(pc.yellow(`${plan.actions.length} install step(s) pending (${why}); projection skipped.`));
+      if (flow.pendingIsBlocker !== false) blockers.push(`${plan.actions.length} install step(s) pending (${why})`);
+      skipItems.push(...plan.actions.map(actionLabel));
+      for (const p of finalizeInstall(hub, skipItems)) blockers.push(`${p.item}: ${p.message}`);
     } else if (!isBareHub(hub)) {
-      for (const p of runInstall(plan).failed) {
-        console.error(pc.red(`✗ ${p.item}: ${p.message}`));
-        blockers.push(`${p.item}: ${p.message}`);
+      const result = runInstall(plan);
+      skipItems.push(...result.failed.map((p) => p.item), ...result.manual.map((p) => p.item));
+      installedCount = result.installed.length;
+      for (const item of result.already) console.log(pc.green(`✓ ${item.replace(/^(skill|mcp) /, '')}: already installed (check passed)`));
+      for (const item of result.installed) console.log(pc.green(`✓ Installed ${item}`));
+      for (const m of result.manual) {
+        manualCount++;
+        console.log(pc.yellow(`⚠ ${m.item}: ${m.message} (projection skipped)`));
+      }
+      for (const f of result.failed) {
+        console.error(pc.red(`✗ ${f.item}: ${f.message} (projection skipped)`));
+        blockers.push(`${f.item}: ${f.message}`);
       }
     }
 
@@ -253,13 +249,15 @@ export function buildCli(): Command {
     if (!isBareHub(hub)) {
       const linked = linkSkillsForAllAssistants({ homeDir: home, hubDir: hub });
       if (linked.agents?.message.includes('npx skills')) console.log(pc.yellow(`\n! ${linked.agents.message}`));
-      syncMcpServers({ homeDir: home, hubDir: hub });
+      syncMcpServers({ homeDir: home, hubDir: hub, skipItems }).actions
+        .filter((a) => a.startsWith('[SKIP]'))
+        .forEach((a) => console.log(pc.yellow(a)));
     }
     if (blockers.length === 0 && !declined) {
       if (manualCount > 0) console.log(pc.yellow(`${manualCount} item(s) need a manual install, see above`));
       else console.log(pc.green(`✓ Skills and MCP servers are installed${installedCount ? ` (${installedCount} new)` : ''}`));
     }
-    return { blockers, approved };
+    return { blockers, approved, skipItems };
   }
 
   const LEVEL_TAG: Record<DoctorItem['level'], string> = {
@@ -488,9 +486,9 @@ export function buildCli(): Command {
       // setup and init finish even when the user declines the plan: pending items are reported, not blockers
       const flow = hasDeclaredSources(hubDir)
         ? await runInstallFlow(options, { probe: true, pendingIsBlocker: false, frozen: frozenFor(options) })
-        : { blockers: [] as string[], approved: await consent(options, [], true, (r) => isApproved(loadApprovals(hubDir), r)) };
+        : { blockers: [] as string[], skipItems: [], approved: await consent(options, [], true, (r) => isApproved(loadApprovals(hubDir), r)) };
       const installBlockers = flow.blockers;
-      const doctorRes = runDoctor({ fix: true, homeDir, hubDir });
+      const doctorRes = runDoctor({ fix: true, homeDir, hubDir, skipItems: flow.skipItems });
       doctorRes.issues.unshift(...installBlockers);
 
       if (doctorRes.issues.length > 0) {
@@ -666,7 +664,7 @@ export function buildCli(): Command {
         functional: options.functional !== false,
         timeoutSec,
         clientVersion: VERSION,
-        installFlow: async () => (await runInstallFlow(options)).blockers,
+        installFlow: async () => runInstallFlow(options),
       });
 
       if (options.json) {

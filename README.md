@@ -121,6 +121,7 @@ The hub records where each one comes from (`local`, `github:owner/repo#subpath`,
 Folders an assistant manages itself (Claude's `synced/`, Codex's `.system/`) and links to machine-specific paths are never committed.
 Work-only servers and skills stay on your machine with `agenthub ignore mcp <name>` (a `local.json` kept outside the hub repo).
 A custom source needs only a `check`; `install` is optional, and without it a failing check is a warning that tells you to install the item yourself.
+Failed, pending and manual installs are skipped when creating new skill links and projecting MCP entries, with a warning. MCP servers whose executable cannot be found are also skipped. Existing working links and assistant entries are preserved, and undeclared skills continue to work.
 
 ```bash
 agenthub setup && agenthub git init --remote-url git@github.com:you/my-setup.git

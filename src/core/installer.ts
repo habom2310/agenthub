@@ -596,7 +596,7 @@ export function runInstall(plan: InstallPlan): InstallResult {
     }
   }
   if (!plan.frozen && !isBareHub(plan.hub)) saveLock(plan.hub, plan.lock);
-  failed.push(...finalizeInstall(plan.hub, [...failed, ...manual].map((f) => f.item)));
+  failed.push(...finalizeInstall(plan.hub, [...plan.errors, ...failed, ...manual].map((f) => f.item)));
   return { installed, already, manual, failed };
 }
 
@@ -647,7 +647,7 @@ export function finalizeInstall(hubDir?: string, skipItems: string[] = []): Inst
   const previouslyManaged = new Set(readManagedIgnoreBlock(hub).map((e) => e.replace(/^\/skills\//, '')));
   // nothing declared, nothing locked, nothing managed before: leave the hub as it is
   if (isBareHub(hub) && previouslyManaged.size === 0) return [];
-  const problems = syncGeneratedMcp(hub, sources, lock);
+  const problems = syncGeneratedMcp(hub, sources.filter((d) => !skipItems.includes(itemLabel(d.kind, d.name))), lock);
   const linked = new Set<string>();
   const ignoredSkills = ignoredNames(hub, 'skills');
 

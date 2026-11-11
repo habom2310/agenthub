@@ -40,8 +40,8 @@ export interface FullDoctorOptions {
   timeoutSec?: number;
   concurrency?: number;
   clientVersion?: string;
-  /** Offers the install flow (with its own consent) for --fix; resolves to blockers */
-  installFlow?: () => Promise<string[]>;
+  /** Offers the install flow (with its own consent) for --fix; includes deferred items when available. */
+  installFlow?: () => Promise<string[] | { blockers: string[]; skipItems: string[] }>;
 }
 
 export interface FullDoctorResult {
@@ -361,23 +361,30 @@ export async function runFunctionalChecks(options: FullDoctorOptions = {}): Prom
   return items;
 }
 
+/** Runs the optional install flow and keeps compatibility with callbacks returning only blockers. */
+async function installForDoctor(options: FullDoctorOptions, hubDir: string, notes: string[]): Promise<string[]> {
+  if (!options.installFlow || !hasDeclaredSources(hubDir)) return [];
+  const result = await options.installFlow();
+  const blockers = Array.isArray(result) ? result : result.blockers;
+  if (blockers.length > 0) notes.push(`install flow left ${blockers.length} problem(s)`);
+  return Array.isArray(result) ? [] : result.skipItems;
+}
+
 /** Structural checks plus the functional ones, optionally repairing first. */
 export async function runFullDoctor(options: FullDoctorOptions = {}): Promise<FullDoctorResult> {
   const homeDir = options.homeDir || getHomeDir();
   const hubDir = options.hubDir || getHubDir();
   const repairs: string[] = [];
   const notes: string[] = [];
+  let skipItems: string[] = [];
 
   if (options.fix) {
-    if (options.installFlow && hasDeclaredSources(hubDir)) {
-      const blockers = await options.installFlow();
-      if (blockers.length > 0) notes.push(`install flow left ${blockers.length} problem(s)`);
-    }
+    skipItems = await installForDoctor(options, hubDir, notes);
     linkSkillsForAllAssistants({ homeDir, hubDir });
-    repairs.push(...syncMcpServers({ homeDir, hubDir }).actions.filter((a) => !a.startsWith('All MCP')));
+    repairs.push(...syncMcpServers({ homeDir, hubDir, skipItems }).actions.filter((a) => !a.startsWith('All MCP')));
   }
 
-  const structural = runDoctor({ fix: options.fix, homeDir, hubDir });
+  const structural = runDoctor({ fix: options.fix, homeDir, hubDir, skipItems });
   repairs.push(...structural.repairs);
 
   const items = structuralItems(structural);

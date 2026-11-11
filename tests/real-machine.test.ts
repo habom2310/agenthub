@@ -544,7 +544,7 @@ describe('review follow-ups', () => {
     git(tmp, 'init', '-q', '--bare', '-b', 'main', bare);
     const home = path.join(tmp, 'home');
     const hub = path.join(home, '.agenthub');
-    const claudeServers = { work: { type: 'stdio', command: 'work-mcp', args: [] }, keep: { type: 'stdio', command: 'keep-mcp', args: [] } };
+    const claudeServers = { work: { type: 'stdio', command: 'work-mcp', args: [] }, keep: { type: 'stdio', command: process.execPath, args: [] } };
     write(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: claudeServers }));
     await runCli(['-H', home, 'setup', '--scaffold-only']);
     await runCli(['-H', home, 'mcp', 'sync']);
