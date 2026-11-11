@@ -506,7 +506,7 @@ function commandProblem(cfg: McpServerConfig, home: string): string | null {
   if (!isServerObject(cfg)) return 'invalid server configuration';
   if (!cfg.command && typeof cfg.url === 'string') return null;
   if (typeof cfg.command !== 'string' || !cfg.command) return 'server has neither a command nor a url';
-  const env = homeEnv();
+  const env = homeEnv(process.env, home);
   const { config, unresolved } = resolveServerVars({
     command: cfg.command,
     cwd: cfg.cwd,

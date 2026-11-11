@@ -100,8 +100,7 @@ export function getHubDir(): string {
  * works on. It is changed only when --home or AGENTHUB_HOME differs from the real
  * home, so a normal run passes the environment through untouched.
  */
-export function homeEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const home = getHomeDir();
+export function homeEnv(base: NodeJS.ProcessEnv = process.env, home = getHomeDir()): NodeJS.ProcessEnv {
   if (path.resolve(home) === path.resolve(os.homedir())) return base;
   const env: NodeJS.ProcessEnv = { ...base, HOME: home, USERPROFILE: home };
   if (process.platform === 'win32') {

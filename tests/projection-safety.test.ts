@@ -9,6 +9,7 @@ import { MCP_PLATFORMS, MCP_PLATFORM_IDS, readPlatform } from '../src/core/mcp-p
 import { syncMcpServers } from '../src/core/mcp-sync.js';
 import { runtime, saveLock } from '../src/core/sources.js';
 import { createJunction, safeWriteFile } from '../src/utils/fs.js';
+import { createTestCommands } from './fixtures/commands.js';
 
 describe('projection safety in isolated homes', () => {
   let home: string;
@@ -89,6 +90,24 @@ describe('projection safety in isolated homes', () => {
 
     expect(result.actions.filter((a) => a.startsWith('[SKIP]'))).toHaveLength(3);
     for (const id of MCP_PLATFORM_IDS) expect(Object.keys(readPlatform(MCP_PLATFORMS[id], home).servers), id).toEqual(['good']);
+  });
+
+  it('resolves command environment variables using the explicitly supplied home', () => {
+    const bin = path.join(home, 'bin');
+    createTestCommands(bin, ['home-tool']);
+    const otherHome = path.join(home, 'other-home');
+    fs.mkdirSync(otherHome);
+    setCustomHome(otherHome, path.join(otherHome, '.agenthub'));
+    write(path.join(hub, 'mcp', 'servers.json'), { mcpServers: {
+      fromHome: { command: '${env:HOME}/bin/home-tool' },
+      fromProfile: { command: '${env:USERPROFILE}/bin/home-tool' },
+    } });
+
+    const result = syncMcpServers({ homeDir: home, hubDir: hub });
+
+    expect(result.actions.some((a) => a.startsWith('[SKIP]'))).toBe(false);
+    expect(Object.keys(readPlatform(MCP_PLATFORMS.claude, home).servers).sort()).toEqual(['fromHome', 'fromProfile']);
+    expect(fs.existsSync(path.join(otherHome, '.claude.json'))).toBe(false);
   });
 
   it('retains successful custom items and leaves the lock unchanged on a frozen reinstall', async () => {
