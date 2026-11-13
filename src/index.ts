@@ -2,7 +2,7 @@
  * agenthub - Unified configuration, skills, rules, and MCP management engine
  */
 
-export const VERSION = '0.4.0';
+export const VERSION = '0.4.1';
 
 // Utils
 export {
